@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+
+# Local configuration and secrets
+.env
+docker-compose.yml
+docker-compose.override.yml
+
+# Runtime data (databases, state, logs, cookies)
+data/
+*.db
+*.db-journal
+*.sqlite3
+*.log
+*.jsonl
+cookies/
+
+# Editors
+.vscode/
+.idea/
+*.bak

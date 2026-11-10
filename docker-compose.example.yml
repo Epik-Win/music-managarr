@@ -1,0 +1,211 @@
+# Example stack: MusicAI, the yt-dlp PO-token sidecar, Lidarr and LRCGET.
+# Copy to docker-compose.yml next to your .env (see .env.example), adjust the
+# host paths and IPs, then `docker compose up -d --build`.
+#
+# Host layout used below:
+#   /srv/media/music        the library (Plex's music library points here)
+#   /srv/media/app/data     MusicAI's databases and state, beside the music:
+#                           its probation/soon-to-go links are relative paths
+#                           that resolve on the host only in this layout
+services:
+  musicai:
+    build: .
+    container_name: musicaio
+    # Mullvad's WireGuard tunnel runs inside the container.
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.getaddrinfo('discord.gg', 443)"]
+      interval: 3600s
+      timeout: 5s
+      retries: 3
+      start_period: 1000s
+    environment:
+      # Plex
+      - PLEX_URL=${PLEX_URL}
+      - PLEX_TOKEN=${PLEX_TOKEN}
+      - PLEX_SERVER_NAME=${PLEX_SERVER_NAME:-}
+      - PLEX_MUSIC_SECTIONS=${PLEX_MUSIC_SECTIONS:-Music}
+      - MUSIC_BASE_DIR=/music
+      - DATA_DIR=/app/data
+      - HOST_MUSIC_BASE_PATH=/srv/media        # Plex sees the library at /srv/media/music
+      - PUID=1000                                # owner of the songs MusicAI writes (Lidarr's user);
+      - PGID=1000                                #   default: the owner of /music/albums
+
+      # Users: {"discord_handle": "plex_username"}, admin first (or set the override)
+      - WIZARR_MAPPING_FILE=/data/wizarr/plex_invite_targets.json
+      - DISCORD_TO_PLEX_MAPPING_ADMIN=${DISCORD_TO_PLEX_MAPPING_ADMIN:-}
+
+      # The local AI: an OpenAI-compatible endpoint (LiteLLM, llama.cpp, vLLM,
+      # Ollama …) reachable from this VPN container: its /v1 URL, key and model.
+      - LOCAL_AI_API_BASE=${LOCAL_AI_API_BASE:?Set a reachable OpenAI-compatible /v1 URL}
+      - LOCAL_AI_API_KEY=${LOCAL_AI_API_KEY:-}
+      - LOCAL_AI_MODEL=${LOCAL_AI_MODEL:?Set the model to ask}
+
+      # Cycle
+      - SCAN_INTERVAL=604800                     # one pass a week
+      - CYCLE_ON_STARTUP=false                   # true: first pass right after the first start
+      - CYCLE_STAGGER_SECONDS=30
+      - USER_ACTIVITY_WINDOW_DAYS=30
+      - PREFERENCE_CONFIDENCE_THRESHOLD=0.95
+      - MIN_TRACKS_FOR_CONFIDENCE=10
+      - TOP_ARTIST_LIMIT=5
+
+      # Library review (docs/library.md)
+      - ENABLE_AUTO_DELETE=true
+      - GRADUATION_SCORE=0.55
+      - PROBATION_DELETE_SCORE=0.15
+      - DISK_LOW_GB=10
+      - DISK_TARGET_GB=20
+
+      # Downloads
+      - DEEZER_ARL=${DEEZER_ARL:-}
+      - PROJECT_ENV_FILE=/app/data/project.env
+      - BGUTIL_POT_PROVIDER_URL=http://172.21.0.250:4416
+
+      # Metadata lookups (lyrics, tags, cover art, fingerprints) leave through
+      # metadata-proxy, outside the VPN; downloads stay in it. Leave it unset
+      # to send everything through the VPN.
+      - METADATA_PROXY=http://172.21.0.248:8888
+
+      # Lidarr (docs/lidarr.md). Reached by IP: the VPN breaks service-name DNS here.
+      - LIDARR_URLS=${LIDARR_URL:-http://192.168.1.10:8686}
+      - LIDARR_API_KEYS=${LIDARR_API_KEY:-}
+
+      # Metadata, discovery and identification (all optional)
+      - LAST_FM_API_KEY=${LAST_FM_API_KEY:-}
+      - DISCOGS_TOKEN=${DISCOGS_TOKEN:-}
+      - ACOUSTID_API_KEY=${ACOUSTID_API_KEY:-}
+      - ACRCLOUD_ACCESS_KEY=${ACRCLOUD_ACCESS_KEY:-}
+      - ACRCLOUD_ACCESS_SECRET=${ACRCLOUD_ACCESS_SECRET:-}
+      - ACRCLOUD_HOST=${ACRCLOUD_HOST:-}
+      - METADATA_REPAIR_DRY_RUN=true             # read the daily log first, then set false
+
+      # Identify a song by its sung lyrics when fingerprinting finds nothing:
+      # Whisper transcribes, Genius (then SearXNG) finds candidates, LRCLIB
+      # verifies. Without WHISPER_URL/SEARXNG_URL, containers named "litellm"
+      # (4000) and "searxng" (8080) are looked up on the Docker network.
+      - LYRICS_ID_ENABLED=true
+      - GENIUS_ACCESS_TOKEN=${GENIUS_ACCESS_TOKEN:-}
+      - LYRICS_ID_SEARCHES_PER_DAY=30
+      - WHISPER_URL=${WHISPER_URL:-}             # OpenAI-compatible transcription, without /v1
+      - WHISPER_MODEL=whisper-1                # a large Whisper hears sung vocals small ones miss
+      - SEARXNG_URL=${SEARXNG_URL:-}
+
+      # Discord (docs/discord.md)
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - DISCORD_MAIN_CHANNEL=${DISCORD_MAIN_CHANNEL:-}
+      - DISCORD_ENABLED=${DISCORD_ENABLED:-true}
+
+      # ARL refresh page (bound only while the Deezer login has expired)
+      - PORT=8899
+      - ARL_SERVER_SECRET=${ARL_SERVER_SECRET}
+      - ARL_PUBLIC_URL=${ARL_PUBLIC_URL:-}       # e.g. https://arl.example.com behind a reverse proxy
+
+      # VPN
+      - VPN_REQUIRED=true
+      - MULLVAD_DAEMON_ENABLED=1
+      - MULLVAD_ACCOUNT_NUMBER=${MULLVAD_ACCOUNT_NUMBER}
+      - MULLVAD_RELAY_COUNTRY=${MULLVAD_RELAY_COUNTRY:-}
+      - MULLVAD_RELAY_CITY=${MULLVAD_RELAY_CITY:-}
+      - LAN_SUBNETS=192.168.1.0/24               # reached directly, past the tunnel
+    volumes:
+      - /srv/media/music:/music
+      - /srv/media/app/data:/app/data
+      - ./.env:/app/data/project.env             # lets the ARL page update DEEZER_ARL
+      - /srv/media/app/data/deemix:/root/.config/deemix
+      - /path/to/wizarr:/data/wizarr             # contains plex_invite_targets.json
+      - /etc/localtime:/etc/localtime:ro
+      # Mullvad's login and settings survive container restarts
+      - /path/to/mullvad/cache:/var/cache/mullvad-vpn
+      - /path/to/mullvad/etc:/etc/mullvad-vpn
+    extra_hosts:
+      - "plex:192.168.1.10"
+    ports:
+      - 8899:8899
+    networks: [ default_net ]
+    depends_on:
+      lidarr:
+        condition: service_healthy
+      metadata-proxy:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Proof-of-origin token provider for yt-dlp (YouTube refuses most downloads
+  # without one). Fixed IP: musicai reaches it past the VPN's DNS.
+  # https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.0   # same major as the pip plugin in requirements.txt
+    container_name: bgutil-provider
+    networks:
+      default_net:
+        ipv4_address: 172.21.0.250
+    restart: unless-stopped
+
+  # Forward proxy for musicai's metadata lookups, outside its VPN (some
+  # services, like Genius, refuse VPN addresses). No published port. Fixed IP:
+  # musicai reaches it past the VPN's DNS.
+  metadata-proxy:
+    build: ./docker/metadata-proxy
+    container_name: metadata-proxy
+    networks:
+      default_net:
+        ipv4_address: 172.21.0.248
+    restart: unless-stopped
+
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    networks: [ default_net ]
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8686/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - /path/to/lidarr/config:/config
+      - /srv/media/downloads:/downloads
+      - /srv/media/music:/music                  # the same library path as musicai's
+    ports:
+      - 8686:8686
+    restart: unless-stopped
+
+  # Lyrics files: LRCGET (a desktop app, in the browser on port 5800) writes
+  # <song>.lrc next to each song from LRCLIB; MusicAI moves and deletes them
+  # with their song. Point it at /music and turn on auto-export of .lrc.
+  lrcget:
+    image: ghcr.io/crywolf203/lrcget-unraid:latest
+    container_name: lrcget
+    environment:
+      - USER_ID=1000                             # the library's owner, so .lrc files match it
+      - GROUP_ID=1000
+      - UMASK=002
+      - KEEP_APP_RUNNING=1
+      - WEB_AUDIO=1
+    volumes:
+      - /path/to/lrcget/config:/config
+      - /srv/media/music/albums:/music
+    ports:
+      - 5800:5800
+    shm_size: 2gb
+    restart: unless-stopped
+
+networks:
+  default_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
