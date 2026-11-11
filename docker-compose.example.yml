@@ -1,6 +1,6 @@
 # Example stack: MusicAI, the yt-dlp PO-token sidecar, Lidarr and LRCGET.
 # Copy to docker-compose.yml next to your .env (see .env.example), adjust the
-# host paths and IPs, then `docker compose up -d --build`.
+# host paths and IPs, then `docker compose pull musicai && docker compose up -d`.
 #
 # Host layout used below:
 #   /srv/media/music        the library (Plex's music library points here)
@@ -9,7 +9,7 @@
 #                           that resolve on the host only in this layout
 services:
   musicai:
-    build: .
+    image: ghcr.io/epik-win/music-managarr:latest
     container_name: musicaio
     # Mullvad's WireGuard tunnel runs inside the container.
     cap_add:
