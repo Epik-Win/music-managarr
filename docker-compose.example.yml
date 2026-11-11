@@ -1,6 +1,6 @@
 # Example stack: MusicAI, the yt-dlp PO-token sidecar, Lidarr and LRCGET.
 # Copy to docker-compose.yml next to your .env (see .env.example), adjust the
-# host paths and IPs, then `docker compose pull musicai && docker compose up -d`.
+# host paths and IPs, then `docker compose pull && docker compose up -d`.
 #
 # Host layout used below:
 #   /srv/media/music        the library (Plex's music library points here)
@@ -154,7 +154,7 @@ services:
   # services, like Genius, refuse VPN addresses). No published port. Fixed IP:
   # musicai reaches it past the VPN's DNS.
   metadata-proxy:
-    build: ./docker/metadata-proxy
+    image: ghcr.io/epik-win/music-managarr-metadata-proxy:latest
     container_name: metadata-proxy
     networks:
       default_net:

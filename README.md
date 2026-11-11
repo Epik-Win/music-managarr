@@ -119,15 +119,17 @@ git clone <this repository> musicai && cd musicai
 cp .env.example .env                                   # secrets and per-site values
 cp docker-compose.example.yml docker-compose.yml       # host paths, IPs, services
 $EDITOR .env docker-compose.yml
-docker compose pull musicai
+docker compose pull
 docker compose up -d
 docker logs -f musicaio
 ```
 
-The `musicai` service uses the published
+The `musicai` and `metadata-proxy` services use published GitHub Container
+Registry images:
 [`ghcr.io/epik-win/music-managarr`](https://github.com/Epik-Win/music-managarr/pkgs/container/music-managarr)
-image. GitHub publishes `latest` from `main`; the repository's Dockerfile is
-still available for local development and custom builds.
+and `ghcr.io/epik-win/music-managarr-metadata-proxy`. GitHub publishes
+`latest` from `main`; the Dockerfiles remain available for local development
+and custom builds.
 
 Then:
 
