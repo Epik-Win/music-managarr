@@ -116,7 +116,7 @@ bot says so privately.
 | `/request link:<url>` | Request a song, album or playlist (handled in your thread). |
 | `/library_status` | How many songs the library has, how many are on probation and soon to go, and your recent requests. |
 | `/clean_library [preview]` | Admin only: tidy the shared library in the background (`album_artist_merger.py`, every pass): one folder per artist and per album, Lidarr's names winning (Lidarr moves its own files), loose files filed, albums matched to Lidarr's, duplicate songs — the same recording by sound — moved to the quarantine folder, Plex's split albums joined. Band names are never split ("Earth, Wind & Fire"), different albums are never joined ("The Blueprint 3"), and nothing is deleted outright. `preview:True` only reports what would change. Reports in your thread. |
-| `/one_star_delete [on\|off]` | Admin only: whether the admin's one-star rating in Plex deletes the song. Without a choice, shows the setting. |
+| `/one_star_delete [on\|off]` | Admin only: whether the admin's one-star rating in Plex deletes the song. Only ratings given after it is switched on count; songs rated one star while it was off stay. Without a choice, shows the setting. |
 
 The admin commands are hidden from members without the **Manage Server**
 permission. The server owner always sees them and always counts as admin. If

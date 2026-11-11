@@ -42,7 +42,8 @@ going through a Mullvad VPN tunnel inside the container.
 - **The admin's one star deletes:** a song the admin rates exactly one star
   is deleted within a minute, without blacklisting it (a mistaken rating is
   easy to undo by requesting the song again). The admin turns this on and off
-  with `/one_star_delete`.
+  with `/one_star_delete`; songs rated one star while it was off are not
+  deleted when it is switched back on.
 - **No passwords.** Only the Plex admin's token is configured; each Plex Home
   user's token is derived from it, so each user's history is read as them.
 

@@ -3208,13 +3208,15 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 @bot.tree.command(name="one_star_delete", description="Admin: whether rating a song one star in Plex deletes it")
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)   # hidden from members without Manage Server
-@app_commands.describe(state="on: your one-star rating deletes the song; off: it is left alone. Empty: show the setting")
+@app_commands.describe(state="on: songs you rate one star from now on are deleted; off: none are. Empty: show the setting")
 @app_commands.choices(state=[app_commands.Choice(name="on", value="on"),
                              app_commands.Choice(name="off", value="off")])
 async def one_star_delete(interaction: discord.Interaction, state: Optional[app_commands.Choice[str]] = None):
     """The admin turns one-star deletion on or off (runtime_settings
     ONE_STAR_DELETE): the one-star watcher checks it before every pass.
-    Without a state, the current setting is shown."""
+    Switching it on keeps the time (ONE_STAR_DELETE_SINCE): only one-star
+    ratings given from then on delete a song, never those given while it was
+    off. Without a state, the current setting is shown."""
     import runtime_settings
     if not _in_requests_channel(interaction):
         await interaction.response.send_message("❌ Use this command in the music requests channel.", ephemeral=True)
@@ -3222,15 +3224,26 @@ async def one_star_delete(interaction: discord.Interaction, state: Optional[app_
     if not _is_admin(interaction):
         await interaction.response.send_message("❌ Only the admin can change this.", ephemeral=True)
         return
+    since = runtime_settings.get_value('ONE_STAR_DELETE_SINCE')
+    if not isinstance(since, (int, float)) or isinstance(since, bool):
+        since = None
     if state is not None:
-        runtime_settings.set_value('ONE_STAR_DELETE', state.value == 'on')
+        turn_on = state.value == 'on'
+        if not turn_on:
+            since = None
+        elif since is None or not runtime_settings.get_bool('ONE_STAR_DELETE', True):
+            since = time.time()
+        runtime_settings.update({'ONE_STAR_DELETE': turn_on, 'ONE_STAR_DELETE_SINCE': since})
         logger.info(f"⭐ One-star deletion turned {state.value} by {interaction.user.name}")
     if runtime_settings.get_bool('ONE_STAR_DELETE', True):
-        text = ("⭐ One-star deletion is **on**: a song you rate exactly one star in Plex is deleted within a "
-                "minute, for everyone. Nothing is blacklisted, so it can be requested or downloaded again.")
+        counted = f"since <t:{int(since)}:f>" if since else "from now on"
+        text = (f"⭐ One-star deletion is **on**: a song you rate exactly one star in Plex {counted} is deleted within a "
+                "minute, for everyone. Songs you rated one star before that are kept; to delete one, clear its "
+                "rating and rate it one star again. Nothing is blacklisted, so it can be requested or downloaded again.")
     else:
-        text = ("⭐ One-star deletion is **off**: your one-star ratings delete nothing. A song two users rate "
-                "one star is still first to go when disk space runs low.")
+        text = ("⭐ One-star deletion is **off**: your one-star ratings delete nothing, now or when it is switched "
+                "back on (only ratings given after that count). A song two users rate one star is still first to "
+                "go when disk space runs low.")
     await interaction.response.send_message(text, ephemeral=True)
 
 

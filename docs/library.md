@@ -92,7 +92,11 @@ playlist holding exactly that list; rating a song on it four stars or more
 **The admin's one star.** While one-star deletion is on (the admin's
 `/one_star_delete` command in Discord; `ONE_STAR_DELETE` is the default), a
 track the admin rates exactly one star is deleted within a minute
-(`one_star_watcher.py`). Only the admin's one star deletes anything.
+(`one_star_watcher.py`). Only the admin's one star deletes anything, and only
+a rating given while deletion is on: the time it was switched on is kept
+(`ONE_STAR_DELETE_SINCE` in `DATA_DIR/settings.json`), and songs rated one
+star before that, such as while it was off, stay when it is switched back
+on. To delete one of them, clear its rating and rate it one star again.
 
 **Blacklisting.** A rating is easy to give by mistake, so no rating and no
 one-star deletion blacklists a song; it can always be requested or

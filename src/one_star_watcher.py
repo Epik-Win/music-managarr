@@ -23,6 +23,12 @@ The admin turns it on and off with /one_star_delete in Discord
 (runtime_settings ONE_STAR_DELETE, whose default is the environment
 variable); it is checked before every pass, and while it is off one-star
 ratings are left alone.
+
+Only ratings given while deletion is on count. The time it was switched on
+is kept (runtime_settings ONE_STAR_DELETE_SINCE), and a track whose rating
+(Plex's lastRatedAt) is older than that is kept: songs rated one star while
+deletion was off are not deleted when it is switched back on. Clearing such a
+song's rating and rating it one star again, once deletion is on, deletes it.
 """
 import logging
 import os
@@ -30,7 +36,7 @@ import shutil
 import sqlite3
 import sys
 import time
-from typing import Dict, Iterable, List, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import library_state
 import paths
@@ -45,6 +51,7 @@ logging.basicConfig(
 logger = logging.getLogger('musicai.one_star')
 
 ONE_STAR_RATING = 2.0
+SINCE_SETTING = 'ONE_STAR_DELETE_SINCE'
 AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wav', '.aac', '.wma')
 # Plex keeps ratings per song match, not per file, and restores an old rating
 # when the song is added again. A rating older than the file it sits on was
@@ -80,6 +87,41 @@ def remaining_copy(file_paths: List[str]):
 def enabled() -> bool:
     import runtime_settings
     return runtime_settings.get_bool('ONE_STAR_DELETE', True)
+
+
+def deleting_since() -> float:
+    """When one-star deletion was switched on (epoch seconds). Deletion is on
+    but no time is kept (switched on outside Discord, or the first pass after
+    an upgrade): it counts from now, so no earlier rating deletes anything."""
+    import runtime_settings
+    since = runtime_settings.get_value(SINCE_SETTING)
+    if isinstance(since, (int, float)) and not isinstance(since, bool):
+        return float(since)
+    since = time.time()
+    runtime_settings.update({SINCE_SETTING: since})
+    logger.info("Counting one-star ratings from now on; songs already rated one star are kept")
+    return since
+
+
+def forget_since() -> None:
+    """Deletion is off: drop the switch-on time, so switching it back on
+    starts a new one and ratings given meanwhile never count."""
+    import runtime_settings
+    if runtime_settings.get_value(SINCE_SETTING) is not None and not enabled():
+        runtime_settings.update({SINCE_SETTING: None})
+
+
+def rated_before(track, since: float) -> bool:
+    """The track's rating was given before deletion was switched on. Plex
+    keeps rating times in whole seconds; a rating without a time cannot be
+    shown to be new, so it counts as older."""
+    rated = getattr(track, 'lastRatedAt', None)
+    if rated is None:
+        return True
+    try:
+        return rated.timestamp() < int(since)
+    except (AttributeError, OverflowError, OSError, ValueError):
+        return True
 
 
 def poll_seconds() -> int:
@@ -167,8 +209,13 @@ def one_star_tracks(section) -> List:
     return section.searchTracks(filters={'userRating': ONE_STAR_RATING})
 
 
-def process_once(section, admin_user: str, db_paths: List[str], handled: Set[str]) -> int:
-    """Delete every newly one-starred track; returns how many were removed."""
+def process_once(section, admin_user: str, db_paths: List[str], handled: Set[str], since: float,
+                 kept: Optional[Dict[str, object]] = None) -> int:
+    """Delete every track rated one star since deletion was switched on;
+    returns how many were removed. `kept` remembers the older ratings already
+    reported, so each is logged once."""
+    if kept is None:
+        kept = {}
     deleted = 0
     touched = False
     for track in one_star_tracks(section):
@@ -186,6 +233,13 @@ def process_once(section, admin_user: str, db_paths: List[str], handled: Set[str
             except Exception as exc:
                 logger.warning(f"Could not clear restored rating on {artist} - {title}: {exc}")
             handled.add(key)
+            continue
+        if rated_before(track, since):
+            rated = getattr(track, 'lastRatedAt', None)
+            if key not in kept or kept[key] != rated:
+                kept[key] = rated
+                logger.info(f"⏸️ {artist} - {title}: rated one star before deletion was switched on "
+                            f"({rated or 'time unknown'}); kept")
             continue
         logger.info(f"⭐ Admin rated 1 star: {artist} - {title} ({len(files)} file(s))")
         other = remaining_copy(files)
@@ -220,6 +274,7 @@ def main() -> int:
 
     section_name = os.environ.get('PLEX_MUSIC_SECTIONS', 'Music').split(':')[0].strip() or 'Music'
     handled: Set[str] = set()
+    kept: Dict[str, object] = {}
     section = None
     was_enabled = None
     logger.info(f"Watching Plex library '{section_name}' for the admin's one-star tracks every {poll_seconds()}s")
@@ -230,6 +285,10 @@ def main() -> int:
             logger.info("One-star deletion is on" if on else "One-star deletion is off: one-star ratings are left alone")
             was_enabled = on
         if not on:
+            try:
+                forget_since()
+            except Exception as exc:
+                logger.debug(f"Could not clear the switch-on time: {exc}")
             time.sleep(poll_seconds())
             continue
         try:
@@ -241,7 +300,7 @@ def main() -> int:
                 continue
             if section is None:
                 section = PlexServer(plex_url, plex_auth.admin_token()).library.section(section_name)
-            process_once(section, admin_user, user_db_paths(mapping), handled)
+            process_once(section, admin_user, user_db_paths(mapping), handled, deleting_since(), kept)
         except Exception as exc:
             logger.warning(f"One-star pass failed ({type(exc).__name__}: {exc}); reconnecting on next pass")
             section = None

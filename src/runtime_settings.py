@@ -39,11 +39,25 @@ def get_bool(name: str, default: bool) -> bool:
     return default
 
 
-def set_value(name: str, value: Any) -> None:
+def get_value(name: str, default: Any = None) -> Any:
+    """A value kept in settings.json, or default when none is."""
+    return _load().get(name, default)
+
+
+def update(values: dict) -> None:
+    """Write several settings at once; a value of None removes that setting."""
     data = _load()
-    data[name] = value
+    for name, value in values.items():
+        if value is None:
+            data.pop(name, None)
+        else:
+            data[name] = value
     os.makedirs(os.path.dirname(_path()), exist_ok=True)
-    tmp = _path() + '.tmp'
+    tmp = f"{_path()}.{os.getpid()}.tmp"
     with open(tmp, 'w') as fh:
         json.dump(data, fh, indent=1, sort_keys=True)
     os.replace(tmp, _path())
+
+
+def set_value(name: str, value: Any) -> None:
+    update({name: value})

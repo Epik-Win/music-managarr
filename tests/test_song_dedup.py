@@ -170,6 +170,9 @@ class TestWatcher:
                           media=[SimpleNamespace(parts=[SimpleNamespace(file=str(path))])])
         return t
 
+    # Deletion was switched on before any of these ratings were given.
+    SWITCHED_ON = dt.datetime(2026, 9, 1).timestamp()
+
     def _section(self, tracks):
         return SimpleNamespace(searchTracks=lambda filters=None: tracks, update=lambda: None, emptyTrash=lambda: None)
 
@@ -178,7 +181,7 @@ class TestWatcher:
         f = tmp_path / "R.mp3"; f.write_bytes(b"x")
         t = self._track(f, dt.datetime(2026, 9, 15, 17, 20), dt.datetime(2026, 9, 29, 16, 38))
         handled = set()
-        assert w.process_once(self._section([t]), "admin", [str(tmp_path / "db.db")], handled) == 0
+        assert w.process_once(self._section([t]), "admin", [str(tmp_path / "db.db")], handled, self.SWITCHED_ON) == 0
         assert f.exists() and t.userRating is None and handled == {"9"}
 
     def test_removing_one_version_keeps_the_other_copy(self, tmp_path, monkeypatch):
@@ -188,5 +191,5 @@ class TestWatcher:
         logged = []
         monkeypatch.setattr(w, "record_deletion", lambda *a, **k: logged.append(a))
         monkeypatch.setattr(w.time, "sleep", lambda s: None)
-        assert w.process_once(self._section([t]), "admin", [], set()) == 1
+        assert w.process_once(self._section([t]), "admin", [], set(), self.SWITCHED_ON) == 1
         assert not f.exists() and len(logged) == 1
