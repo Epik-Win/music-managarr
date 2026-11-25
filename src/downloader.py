@@ -928,7 +928,18 @@ class Downloader:
 
     @classmethod
     def _describe_candidates(cls, candidates: List[Dict[str, Any]]) -> str:
-        return "\n".join(f"{idx + 1}. {cls._describe_candidate(c)}" for idx, c in enumerate(candidates))
+        return "\n".join(f"{letter}. {cls._describe_candidate(c)}" for letter, c in zip(cls._LETTERS, candidates))
+
+    # Candidates are named to the AI by letter: asked for a position, it counts
+    # from 0 or from 1 as it pleases.
+    _LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+    @classmethod
+    def _candidate_named(cls, choice: Any, candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """The candidate the AI's answer ("A", "b.", "candidate C") names, if any."""
+        match = re.fullmatch(r'(?:CANDIDATE\s+)?([A-Z])[.):]?', str(choice or '').strip().upper())
+        index = cls._LETTERS.index(match.group(1)) if match else len(candidates)
+        return candidates[index] if index < len(candidates) else None
 
     def _select_best_candidate_with_ai(
         self,
@@ -965,20 +976,57 @@ class Downloader:
             + "Candidates:\n" + self._describe_candidates(candidates) + context_hint + "\n"
             + "Give \"confidence\" from 0 to 1: how sure you are that the chosen candidate is the requested "
             + "recording and version (near 0 when you are only guessing or none of them looks like it).\n"
-            + "Return only valid JSON in the form {\"selected_index\": <integer>, \"confidence\": <number>, "
+            + "Return only valid JSON in the form {\"choice\": \"<letter>\", \"confidence\": <number>, "
             + "\"reason\": \"brief explanation\"}."
         )
         parsed = self._ask_local_ai('You rank music download candidates. Return compact JSON only.', prompt) or {}
-        selected_index = parsed.get('selected_index')
-        if isinstance(selected_index, int) and 0 <= selected_index - 1 < len(candidates):
+        choice = self._candidate_named(parsed.get('choice'), candidates)
+        if choice is not None:
             try:
                 confidence = min(1.0, max(0.0, float(parsed.get('confidence', 1.0))))
             except (TypeError, ValueError):
                 confidence = 1.0
-            logger.info(f"🤖 AI selected candidate #{selected_index} for '{artist} - {title}' "
+            logger.info(f"🤖 AI selected '{self._describe_candidate(choice)}' for '{artist} - {title}' "
                         f"(confidence {confidence:.2f})")
-            return candidates[selected_index - 1], confidence
+            return choice, confidence
         return None, 0.0
+
+    @classmethod
+    def _video_seconds(cls, request_context: Optional[str]) -> int:
+        """The linked video's length, 0 when the request doesn't state it."""
+        stated = re.fullmatch(r'(\d+)s', cls._context_fields(request_context).get('video_duration', ''))
+        return int(stated.group(1)) if stated else 0
+
+    @classmethod
+    def _length_fits(cls, candidate: Dict[str, Any], request_context: Optional[str]) -> bool:
+        """Not far from the linked video's length (or one of them is unknown)."""
+        video, length = cls._video_seconds(request_context), int(candidate.get('duration') or 0)
+        return not video or not length or abs(video - length) <= max(20, video * 0.25)
+
+    def _is_the_song(self, candidate: Dict[str, Any], artist: str, title: str,
+                     request_context: Optional[str] = None) -> bool:
+        """The candidate has the request's artist and title, letter for letter,
+        and is the version asked for."""
+        compact = lambda text: self._deemix_norm(text).replace(' ', '')
+        name = candidate.get('title') or ''
+        return bool(compact(artist) and compact(title)
+                    and compact(candidate.get('artist')) == compact(artist) and compact(name) == compact(title)
+                    and self._variants_of(name) == self._requested_variants(title, request_context))
+
+    def _is_another_song(self, candidate: Dict[str, Any], artist: str, title: str,
+                         request_context: Optional[str] = None) -> bool:
+        """The candidate clearly isn't the request: most of the title's words
+        are missing from it, or its length is far from the video's. Titles in
+        different scripts have no words to compare."""
+        if self._is_the_song(candidate, artist, title, request_context):
+            return False
+        name = self._deemix_norm(candidate.get('title') or '')
+        want, have = set(self._deemix_norm(title).split()), set(name.split())
+        if any(map(str.isascii, want)) == any(map(str.isascii, have)):
+            have |= set(self._deemix_norm(candidate.get('artist') or '').split())
+            if len(want & have) * 2 < len(want):
+                return True
+        return not self._length_fits(candidate, request_context)
 
     # Where "None of these" leads from each source.
     _NEXT_SOURCE = {'Deezer': 'SoundCloud', 'SoundCloud': 'YouTube', 'YouTube': None}
@@ -987,12 +1035,19 @@ class Downloader:
                        request_context: Optional[str], source: str,
                        fallback: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """The candidate to download for a requester who can be asked, or None
-        to move on to the next source. The AI decides on its own unless its
-        confidence is below REQUEST_CHOICE_BELOW (it is only guessing; a
-        single result is judged too): then the requester chooses. With no
-        answer in time, the AI's pick (else `fallback`) is taken."""
+        to move on to the next source. The only result that is the song, by
+        name, version and length, is taken as it is. Otherwise the AI decides,
+        unless its confidence is below REQUEST_CHOICE_BELOW (it is only
+        guessing) or its pick clearly isn't the request: then the requester
+        chooses. With no answer in time, the AI's pick (else `fallback`) is
+        taken."""
+        same = [c for c in candidates if self._is_the_song(c, artist, title, request_context)]
+        if len(same) == 1 and self._length_fits(same[0], request_context):
+            logger.info(f"🎯 {source} has '{self._describe_candidate(same[0])}', the song itself")
+            return same[0]
         choice, confidence = self._ai_rank_candidates(artist, title, candidates, request_context)
-        if choice is not None and confidence >= request_choice.ask_below():
+        if choice is not None and confidence >= request_choice.ask_below() \
+                and not self._is_another_song(choice, artist, title, request_context):
             return choice
         answer = request_choice.ask(
             f"{artist} - {title}" if artist else title, source,
@@ -3259,8 +3314,8 @@ class Downloader:
 
     def _cut_short(self, file_path: str, request_context: Optional[str]) -> bool:
         """Far shorter than the video the request links: a preview, not the song."""
-        stated = re.fullmatch(r'(\d+)s', self._context_fields(request_context).get('video_duration', ''))
-        if not stated:
+        video = self._video_seconds(request_context)
+        if not video:
             return False
         try:
             from mutagen import File
@@ -3268,7 +3323,7 @@ class Downloader:
         except Exception as exc:
             logger.debug(f"Could not read the length of {file_path}: {exc}")
             return False
-        return length < int(stated.group(1)) / 2
+        return length < video / 2
 
     @staticmethod
     def _staging_dir(prefix: str) -> str:

@@ -27,7 +27,7 @@ class TestDownloadAIRanking:
                     "choices": [
                         {
                             "message": {
-                                "content": '{"selected_index": 2, "reason": "prefer the live version"}'
+                                "content": '{"choice": "B", "reason": "prefer the live version"}'
                             }
                         }
                     ]

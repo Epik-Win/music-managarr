@@ -78,14 +78,17 @@ replacing wrong audio — uses `downloader.Downloader.download_track()`.
    does later.
 
 **Asking the requester.** For a request posted in Discord and downloaded
-right away, the AI judges every source's results — even a single one — and gives its
-confidence (0–1). Below `REQUEST_CHOICE_BELOW` (0.1: it is only guessing)
-the requester gets a drop-down list of the results in their private
+right away, the only result of a source that has the song's artist, title and
+version, and fits the linked video's length, is taken without asking anyone.
+Otherwise the AI picks among the results and gives its confidence (0–1). Below
+`REQUEST_CHOICE_BELOW` (0.1: it is only guessing), or when its pick clearly
+isn't the song (most of the title's words missing, or a length far from the
+video's), the requester gets a drop-down list of the results in their private
 thread, plus **None of them match**, and a **Select** button that sends
 the choice back: the chosen song is downloaded, or *None of them match*
 moves on to the next source: Deezer → SoundCloud → YouTube, or
 Deezer → the linked video → SoundCloud for a YouTube link. That source asks
-again only if the AI is guessing again. With no answer within
+again only if its results are just as unclear. With no answer within
 `REQUEST_CHOICE_TIMEOUT_SECONDS` (15 min), the AI's best guess is
 downloaded, as it would be without asking. The time spent waiting does not
 count against deemix's timeout. Nothing downloaded in a cycle is ever asked

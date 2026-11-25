@@ -765,12 +765,14 @@ def label_album_tracks(tracks: list, album: dict) -> None:
 def playlist_track_context(source: str, track: dict) -> str:
     """What the downloader is told about one playlist song: its own link (a
     YouTube video comes before searching SoundCloud, and is the recording
-    meant), its album and the Deezer track it is."""
+    meant) and that video's length, its album and the Deezer track it is."""
     parts = [f"source={source}_playlist"]
     if track.get('album'):
         parts.append(f"album={track['album']}")
     if track.get('url'):
         parts.append(f"url={track['url']}")
+    if source == 'youtube' and track.get('duration'):
+        parts.append(f"video_duration={int(track['duration'])}s")
     if track.get('deezer_track'):
         parts.append(f"deezer_track={track['deezer_track']}")
     return '; '.join(parts)

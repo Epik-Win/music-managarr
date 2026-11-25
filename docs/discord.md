@@ -36,14 +36,16 @@ Everything else is private:
   admin's own thread (a direct message if it can't be opened). Any process
   can queue one (`admin_notify.py`); a changed notice is posted again so the
   admin is notified, and a resolved one is removed.
-- **"Which one is it?"** The local AI picks the search result that is your
-  song on its own. Only when it is merely guessing (confidence below
-  `REQUEST_CHOICE_BELOW`, 0.1) does the bot ask you in your thread: pick the
-  song from the drop-down list — or **None of them match** — and press
+- **"Which one is it?"** The only search result with your song's artist,
+  title, version and length is taken as it is; otherwise the local AI picks.
+  Only when it is merely guessing (confidence below `REQUEST_CHOICE_BELOW`,
+  0.1), or its pick clearly isn't your song (most of the title's words
+  missing, or a length far from the linked video's), does the bot ask you in
+  your thread: pick the song from the drop-down list — or **None of them match** — and press
   **Select**. The chosen song is downloaded; *None of them match* tries the
   next source (Deezer → SoundCloud → YouTube, or Deezer → the linked video →
-  SoundCloud for a YouTube link), which asks again only if the
-  AI is guessing again. Only you or the admin can answer. Without an answer
+  SoundCloud for a YouTube link), which asks again only if its results are
+  just as unclear. Only you or the admin can answer. Without an answer
   within `REQUEST_CHOICE_TIMEOUT_SECONDS` (15 min) the AI's best guess is
   downloaded. The list keeps working across bot restarts. A settled
   question is deleted (the confirmation after Select is visible only to

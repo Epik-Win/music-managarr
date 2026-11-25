@@ -42,7 +42,7 @@ def _downloader(ai_reply):
 
 
 CANDIDATES = [{"artist": "Ylvis", "title": "The Fox (Acapella)", "source": "deezer", "duration": 200},
-              {"artist": "Ylvis", "title": "The Fox", "source": "deezer", "duration": 213}]
+              {"artist": "Ylvis", "title": "The Fox (What Does the Fox Say?)", "source": "deezer", "duration": 213}]
 
 
 class TestAsking:
@@ -86,15 +86,15 @@ class TestChoosing:
     def test_the_ai_decides_unless_it_is_only_guessing(self, asking_env, monkeypatch):
         monkeypatch.setattr(rc, "ask", lambda *a, **k: pytest.fail("asked although the AI was not guessing"))
         for confidence in (1.0, 0.5, 0.15):                       # unsure is not enough to ask
-            d = _downloader({"selected_index": 2, "confidence": confidence})
+            d = _downloader({"choice": "B", "confidence": confidence})
             with rc.asking("alice"):
                 assert d._choose_or_ask("Ylvis", "The Fox", CANDIDATES, "", "Deezer") is CANDIDATES[1]
-        d = _downloader({"selected_index": 2})                    # no confidence given: its pick stands
+        d = _downloader({"choice": "B"})                    # no confidence given: its pick stands
         with rc.asking("alice"):
             assert d._choose_or_ask("Ylvis", "The Fox", CANDIDATES, "", "Deezer") is CANDIDATES[1]
 
     def test_the_requester_settles_a_guess(self, asking_env):
-        d = _downloader({"selected_index": 1, "confidence": 0.05})
+        d = _downloader({"choice": "A", "confidence": 0.05})
         with rc.asking("alice"):
             bot = _bot_answers(1)
             assert d._choose_or_ask("Ylvis", "The Fox", CANDIDATES, "", "Deezer") is CANDIDATES[1]
@@ -108,7 +108,7 @@ class TestChoosing:
             bot.join()
 
     def test_none_of_them_match_moves_on(self, asking_env):
-        d = _downloader({"selected_index": 1, "confidence": 0.0})
+        d = _downloader({"choice": "A", "confidence": 0.0})
         with rc.asking("alice"):
             bot = _bot_answers(rc.NEXT)
             assert d._choose_or_ask("Ylvis", "The Fox", CANDIDATES, "", "Deezer") is None
@@ -116,7 +116,7 @@ class TestChoosing:
 
     def test_without_an_answer_the_ais_guess_stands(self, asking_env, monkeypatch):
         monkeypatch.setattr(rc, "ask", lambda *a, **k: None)
-        d = _downloader({"selected_index": 1, "confidence": 0.0})
+        d = _downloader({"choice": "A", "confidence": 0.0})
         with rc.asking("alice"):
             assert d._choose_or_ask("Ylvis", "The Fox", CANDIDATES, "", "Deezer") is CANDIDATES[0]
 
@@ -125,12 +125,12 @@ class TestChoosing:
         monkeypatch.setattr(rc, "ask", lambda request, source, options, next_step, suggestion=None:
                             asked.update(request=request, options=options, next_step=next_step,
                                          suggestion=suggestion))
-        d = _downloader({"selected_index": 2, "confidence": 0.02})
+        d = _downloader({"choice": "B", "confidence": 0.02})
         with rc.asking("alice"):
             d._choose_or_ask("Ylvis", "The Fox", CANDIDATES, "", "Deezer")
         assert asked == {"request": "Ylvis - The Fox", "next_step": "SoundCloud", "suggestion": 1,
                          "options": [{"label": "Ylvis - The Fox (Acapella)", "detail": "3:20"},
-                                     {"label": "Ylvis - The Fox", "detail": "3:33"}]}
+                                     {"label": "Ylvis - The Fox (What Does the Fox Say?)", "detail": "3:33"}]}
 
 
 class TestDeemixTimeout:
@@ -290,3 +290,82 @@ def test_queued_requests_in_a_cycle_never_ask():
     import inspect
     import app
     assert ".asking(" not in inspect.getsource(app.MusicAIAnalyzer._process_discord_requests)
+
+
+def _song(title="Nocturne", artist="Some Uploader", duration=149, album="Vol. 4"):
+    return {"artist": artist, "title": title, "source": "deezer", "duration": duration, "album": album}
+
+
+CONTEXT = "source=youtube_playlist; url=https://www.youtube.com/watch?v=vid00000001; video_duration=150s"
+
+
+class TestNothingToAsk:
+    """The requester is asked only when the results leave a doubt."""
+
+    @pytest.fixture(autouse=True)
+    def never_asks(self, asking_env, monkeypatch):
+        monkeypatch.setattr(rc, "ask", lambda *a, **k: pytest.fail("asked although nothing was unclear"))
+
+    def _choose(self, reply, candidates, context=CONTEXT, title="Nocturne", artist="Some Uploader"):
+        with rc.asking("alice"):
+            return _downloader(reply)._choose_or_ask(artist, title, candidates, context, "Deezer")
+
+    def test_the_only_result_is_the_song_itself(self):
+        d = Downloader.__new__(Downloader)
+        d._ask_local_ai = lambda *a: pytest.fail("nothing to choose between")
+        [song] = candidates = [_song()]
+        with rc.asking("alice"):
+            assert d._choose_or_ask("Some Uploader", "Nocturne", candidates, CONTEXT, "Deezer") is song
+            assert d._choose_or_ask("SOME uploader", "nocturne", candidates, "", "Deezer") is song   # no length known
+
+    def test_the_song_among_other_results(self):
+        candidates = [_song("Nocturne in Blue"), _song(), _song("Another One")]
+        assert self._choose({}, candidates) is candidates[1]
+
+    def test_the_same_song_on_two_albums_is_the_ais_choice(self):
+        candidates = [_song(), _song(album="Best Of")]
+        assert self._choose({"choice": "B", "confidence": 0.8}, candidates) is candidates[1]
+
+    def test_another_length_is_the_ais_choice(self):
+        candidates = [_song(duration=400)]
+        assert self._choose({"choice": "A", "confidence": 0.8}, candidates) is candidates[0]
+
+    def test_a_title_in_another_script_is_the_ais_choice(self):
+        candidates = [_song("ノクターン")]
+        assert self._choose({"choice": "A", "confidence": 0.8}, candidates) is candidates[0]
+
+
+class TestUnclearResults:
+    def _asked(self, monkeypatch, reply, candidates, title="Main Theme Orchestral", context=CONTEXT):
+        asked = []
+        monkeypatch.setattr(rc, "ask", lambda *a, suggestion=None, **k: asked.append(suggestion))
+        with rc.asking("alice"):
+            _downloader(reply)._choose_or_ask("Some Uploader", title, candidates, context, "Deezer")
+        return asked
+
+    def test_a_sure_pick_of_another_song_is_asked_about(self, asking_env, monkeypatch):
+        sure = {"choice": "A", "confidence": 0.8}
+        assert self._asked(monkeypatch, sure, [_song("Winter Dreams")]) == [0]                    # other words
+        assert self._asked(monkeypatch, sure, [_song("Main Theme Orchestral Suite", duration=600)]) == [0]   # other length
+        assert self._asked(monkeypatch, sure, [_song("Main Theme Orchestral Suite", duration=160)]) == []
+
+    def test_the_studio_version_is_not_the_live_one_asked_for(self, asking_env, monkeypatch):
+        live = CONTEXT + "; video_title=Some Uploader - Nocturne (Live)"
+        d = _downloader({})
+        assert not d._is_the_song(_song(), "Some Uploader", "Nocturne", live)
+        assert d._is_the_song(_song("Nocturne"), "Some Uploader", "Nocturne", CONTEXT)
+
+    def test_the_ai_names_a_candidate_by_its_letter(self):
+        candidates = [_song("One"), _song("Two"), _song("Three")]
+        named = lambda answer: (Downloader._candidate_named(answer, candidates) or {}).get("title")
+        assert [named(a) for a in ("A", "b", "C.", "candidate B", "a)")] == ["One", "Two", "Three", "Two", "One"]
+        assert [named(a) for a in ("D", "", None, 0, 1, "none", "AB")] == [None] * 7
+        assert Downloader._describe_candidates(candidates).splitlines()[1].startswith("B. ")
+
+
+def test_a_playlist_song_states_its_videos_length():
+    import discord_bot
+    track = {"url": "https://www.youtube.com/watch?v=vid00000001", "duration": 150}
+    assert "video_duration=150s" in discord_bot.playlist_track_context("youtube", track)
+    assert "video_duration" not in discord_bot.playlist_track_context("spotify", track)
+    assert "video_duration" not in discord_bot.playlist_track_context("youtube", {**track, "duration": 0})
