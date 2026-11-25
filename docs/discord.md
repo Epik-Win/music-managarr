@@ -63,7 +63,8 @@ Everything else is private:
 
 YouTube and YouTube Music, Spotify (tracks, albums, playlists), TikTok,
 Instagram and Shazam links are understood (`link_extractor.py`). A link is resolved to artist/title/album (or every
-track of a playlist), each track goes through the download pipeline with
+track of a playlist; private and deleted videos of a YouTube playlist are left
+out and counted in the reply), each track goes through the download pipeline with
 the link's details as context (a "live version" or "Arabic cover" is
 honoured), Plex is refreshed, and a playlist becomes a Plex playlist of the
 same name — unless the playlist is really one album, in which case the album

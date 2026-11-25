@@ -2,12 +2,13 @@
 import re
 import logging
 import asyncio
+import concurrent.futures
 import functools
 import json
 import os
 import requests
 import subprocess
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 
 import geo_relay
 from naming import artist_from_channel, song_in_quotes
@@ -276,8 +277,8 @@ async def extract_tiktok_metadata(url: str) -> Optional[Dict[str, Any]]:
             oembed_resp = requests.get(oembed_url, headers=headers, timeout=20)
             if oembed_resp.status_code == 200 and oembed_resp.headers.get('content-type', '').startswith('application/json'):
                 oembed_data = oembed_resp.json()
-                title = oembed_data.get('title', '').strip()
-                author = oembed_data.get('author_name', '').strip()
+                title = (oembed_data.get('title') or '').strip()
+                author = (oembed_data.get('author_name') or '').strip()
                 if title and author:
                     title = _clean_tiktok_title(title, author)
                     return {
@@ -466,15 +467,15 @@ async def extract_link_metadata(url: str, message_text: str = '') -> Optional[Di
         if 'youtube.com' in url or 'youtu.be' in url:
             # yt-dlp is sync, so run in thread executor with timeout
             loop = asyncio.get_running_loop()
-            # Add timeout of 60 seconds for YouTube extraction
+            timeout = PLAYLIST_TIMEOUT if 'list=' in url else LINK_TIMEOUT
             try:
                 result = await asyncio.wait_for(
                     loop.run_in_executor(None, functools.partial(extract_youtube_metadata, url)),
-                    timeout=60.0
+                    timeout=timeout
                 )
                 return _build_variant_context(result, url, 'youtube')
             except asyncio.TimeoutError:
-                logger.error(f"❌ YouTube extraction timeout (60s) for: {url}")
+                logger.error(f"❌ YouTube extraction timeout ({timeout:.0f}s) for: {url}")
                 return None
         elif 'tiktok.com' in url or 'vt.tiktok.com' in url:
             # Add timeout for TikTok extraction
@@ -604,7 +605,6 @@ def _try_songnamesplit(raw_title: str, timeout: int = 8):
     if not _SNS_AVAILABLE:
         return None
     raw_title = _normalize_dash_separators(raw_title)
-    import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
             _fut = _pool.submit(_SNS.namesplit, raw_title, True)
@@ -628,7 +628,7 @@ def is_music_video(video_data: Dict[str, Any]) -> Tuple[bool, str]:
     evidence the video is NOT music (vlogs, gameplay, tutorials, podcasts).
 
     Tier 1 signals (fast-accept, checked first):
-        1. categoryId == "10" (Music)
+        1. YouTube's Music category
         2. Official Artist Channel / VEVO
         3. Title matches "Artist - Title" pattern or has Official/Lyric/feat tags
 
@@ -645,7 +645,7 @@ def is_music_video(video_data: Dict[str, Any]) -> Tuple[bool, str]:
     """
     title       = (video_data.get('title')       or '').strip()
     description = (video_data.get('description') or '').strip().lower()
-    category_id = str(video_data.get('category_id') or '')
+    categories  = video_data.get('categories') or []
     uploader    = (video_data.get('uploader')    or '').strip().lower()
     duration    = video_data.get('duration') or 0
 
@@ -653,8 +653,8 @@ def is_music_video(video_data: Dict[str, Any]) -> Tuple[bool, str]:
 
     # ── Tier 1: fast-accept ──────────────────────────────────────────────────
 
-    if category_id == '10':
-        return True, "Tier 1: Music category (ID 10)"
+    if 'Music' in categories:
+        return True, "Tier 1: Music category"
 
     if any(p in uploader for p in ('vevo', 'official', 'music')):
         return True, f"Tier 1: Official/VEVO channel ({uploader})"
@@ -706,10 +706,24 @@ def is_music_video(video_data: Dict[str, Any]) -> Tuple[bool, str]:
     return True, "Default accept: no non-music signals detected"
 
 
-def run_ytdlp(cmd: list, timeout: int = 30):
-    """Run a yt-dlp command. A region-locked video is retried once after
-    geo_relay moves the Mullvad relay to a country where it is available."""
+# Videos of a playlist looked up at the same time, and how long reading a whole
+# playlist may take (a single link gets LINK_TIMEOUT seconds).
+PLAYLIST_LOOKUPS = 4
+PLAYLIST_TIMEOUT = 900.0
+LINK_TIMEOUT = 60.0
+# What YouTube titles a playlist entry that can't be watched any more; yt-dlp
+# gives some of them no title at all.
+UNAVAILABLE_TITLES = ('[private video]', '[deleted video]')
+
+
+def run_ytdlp(cmd: list, timeout: int = 30, other_countries: bool = True):
+    """Run a yt-dlp command. A region-locked video is retried after geo_relay
+    moves the Mullvad relay to a country where it is available, unless
+    other_countries is False (the relay moves for the whole container, so
+    commands running side by side must not move it)."""
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if not other_countries:
+        return result
     for _ in range(geo_relay.max_countries()):
         if result.returncode == 0 or not geo_relay.is_retryable_elsewhere(result.stderr):
             break
@@ -721,6 +735,44 @@ def run_ytdlp(cmd: list, timeout: int = 30):
     return result
 
     return result
+
+
+def _video_lookup(video_id: str) -> list:
+    return ['yt-dlp', '--quiet', '--no-warnings', '-j', '--no-playlist', '--skip-download',
+            f'https://www.youtube.com/watch?v={video_id}']
+
+
+def _video_details(entry: Dict[str, Any], other_countries: bool) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """(a playlist entry's full metadata or None, whether another country may have it)."""
+    try:
+        result = run_ytdlp(_video_lookup(entry['id']), timeout=30, other_countries=other_countries)
+        if result.returncode == 0:
+            return json.loads(result.stdout), False
+        return None, geo_relay.is_retryable_elsewhere(result.stderr)
+    except Exception as exc:
+        logger.debug(f"Could not fetch full metadata for video {entry['id']}: {exc}")
+        return None, False
+
+
+def playlist_details(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The entries' full metadata (category, description, duration), in order;
+    an entry whose lookup fails keeps what the playlist says about it. Several
+    are looked up at a time; those another country may have follow one by one,
+    as moving the relay affects every lookup."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=PLAYLIST_LOOKUPS) as pool:
+        found = list(pool.map(lambda entry: _video_details(entry, False), entries))
+    details = []
+    for entry, (full, elsewhere) in zip(entries, found):
+        if full is None and elsewhere:
+            full, _ = _video_details(entry, True)
+        details.append(full or entry)
+    return details
+
+
+def is_unavailable(video: Dict[str, Any]) -> bool:
+    """A private or deleted video, which a playlist still lists."""
+    title = (video.get('title') or '').strip()
+    return not title or title.lower() in UNAVAILABLE_TITLES
 
 
 def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
@@ -787,49 +839,26 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
                 logger.warning(f"⚠️ yt-dlp failed for playlist {url}: {result.stderr}")
                 return None
             
-            lines = result.stdout.strip().split('\n')
-            tracks = []
-            skipped_count = 0
-            
-            for line in lines:
-                if not line.strip():
-                    continue
+            entries = []
+            for line in result.stdout.strip().split('\n'):
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                
-                # Get video ID from flat playlist entry
-                video_id = data.get('id')
-                if not video_id:
+                if isinstance(data, dict) and data.get('id'):
+                    entries.append(data)
+
+            tracks = []
+            skipped_count = 0
+            unavailable = 0
+
+            for data, full_data in zip(entries, playlist_details(entries)):
+                video_url = f"https://www.youtube.com/watch?v={data['id']}"
+                if is_unavailable(full_data):
+                    logger.info(f"⏭️ Playlist video {data['id']} is private or deleted; left out")
+                    unavailable += 1
                     continue
-                
-                # Fetch full metadata for this video to get category, description, duration
-                try:
-                    video_url = f'https://www.youtube.com/watch?v={video_id}'
-                    cmd_full = [
-                        'yt-dlp',
-                        '--quiet',
-                        '--no-warnings',
-                        '-j',
-                        '--no-playlist',
-                        '--skip-download',
-                        video_url
-                    ]
-                    result_full = run_ytdlp(cmd_full, timeout=15)
-                    
-                    if result_full.returncode != 0:
-                        logger.debug(f"Could not fetch full metadata for video {video_id}, using flat data")
-                        full_data = data
-                    else:
-                        try:
-                            full_data = json.loads(result_full.stdout)
-                        except:
-                            full_data = data
-                except Exception as e:
-                    logger.debug(f"Error fetching full metadata for {video_id}: {e}")
-                    full_data = data
-                
+
                 # Check if this is a music video
                 is_music, reason = is_music_video(full_data)
                 if not is_music:
@@ -837,8 +866,8 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
                     skipped_count += 1
                     continue
                 
-                title = full_data.get('title', '').strip()
-                uploader = full_data.get('uploader', '').strip()
+                title = (full_data.get('title') or '').strip()
+                uploader = (full_data.get('uploader') or full_data.get('channel') or '').strip()
                 
                 # Parse artist and title from the video title
                 artist = uploader
@@ -867,10 +896,12 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
                             parsed_title = right
                             parsed_title = re.sub(r'\s*\([^)]*(?:Official|Video|Audio|Visualizer|Lyric|feat\.?|ft\.)[^)]*\)', '', parsed_title, flags=re.I).strip()
                 
-                # If the uploader is a fan/lyric channel, SongNameSplit can
-                # recover the real artist + song from the raw title.
-                if _looks_like_fan_channel(uploader):
-                    _raw = full_data.get('title', '').strip()
+                # An official upload states its artist and song. From a fan/lyric
+                # channel, SongNameSplit can recover them from the raw title.
+                if full_data.get('artist') and full_data.get('track'):
+                    artist, parsed_title = full_data['artist'], full_data['track']
+                elif _looks_like_fan_channel(uploader):
+                    _raw = (full_data.get('title') or '').strip()
                     logger.debug(f'[SNS] Fan channel playlist: {repr(_raw)}')
                     _sns = _try_songnamesplit(_raw)
                     if _sns:
@@ -891,11 +922,13 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
                     })
             
             if tracks:
-                logger.info(f"✅ YouTube playlist extracted: {len(tracks)} tracks (skipped {skipped_count} non-music videos)")
+                logger.info(f"✅ YouTube playlist extracted: {len(tracks)} tracks (skipped {skipped_count} non-music videos, "
+                            f"{unavailable} private or deleted)")
                 return {
                     'type': 'playlist',
                     'name': playlist_name,
                     'tracks': tracks,
+                    'unavailable': unavailable,
                     'source': 'youtube',
                     'url': url
                 }
@@ -934,8 +967,8 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
             return None
         
         # Extract metadata
-        title = data.get('title', '').strip()
-        artist = data.get('artist', '').strip()
+        title = (data.get('title') or '').strip()
+        artist = (data.get('artist') or '').strip()
         
         # Try to extract artist from title if not provided
         if not artist and title:
@@ -1012,13 +1045,13 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
                     title = title.split('|', 1)[0].strip()
 
         # Fallback: use uploader/channel as artist if still no artist
-        uploader = data.get('uploader', '').strip() or data.get('channel', '').strip()
+        uploader = (data.get('uploader') or '').strip() or (data.get('channel') or '').strip()
 
         # If we don't have a reliable artist or the title looks ambiguous,
         # attempt SongNameSplit on the raw video title before defaulting to the
         # uploader or naive title split.
         if _SNS_AVAILABLE and data.get('title'):
-            _raw_title = data.get('title', '').strip()
+            _raw_title = (data.get('title') or '').strip()
             if not data.get('artist') or _looks_like_fan_channel(uploader) or _has_dash_separator(_raw_title):
                 logger.debug(f'[SNS] Attempting SongNameSplit on: {repr(_raw_title)}')
                 _sns = _try_songnamesplit(_raw_title)
@@ -1033,7 +1066,7 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
         # If the uploader looks like a fan/lyric channel, SongNameSplit can
         # often recover the real artist and song title from the raw video title.
         if _looks_like_fan_channel(uploader):
-            _raw_title = data.get('title', '').strip()
+            _raw_title = (data.get('title') or '').strip()
             logger.debug(f'[SNS] Fan channel ({repr(uploader)}) on: {repr(_raw_title)}')
             _sns = _try_songnamesplit(_raw_title)
             if _sns:
@@ -1043,7 +1076,7 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
 
         artist = artist_from_channel(parse_primary_artist(artist))
         title  = song_in_quotes(clean_track_title(title), artist)
-        raw_title = data.get('title', '').strip()
+        raw_title = (data.get('title') or '').strip()
 
         if not title or not artist:
             logger.warning(f"Could not extract title/artist from YouTube: title='{title}', artist='{artist}'")
@@ -1054,7 +1087,7 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
         return {
             'artist': artist,
             'title': title,
-            'album': data.get('album', '').strip() or '',
+            'album': (data.get('album') or '').strip() or '',
             'source': 'youtube',
             'url': url,
             'video_title': raw_title,
@@ -1267,9 +1300,9 @@ def extract_shazam_metadata(url: str, message_text: str = '') -> Optional[Dict[s
                             if 'byArtist' in jsonld:
                                 artist_data = jsonld['byArtist']
                                 if isinstance(artist_data, dict):
-                                    artist = artist_data.get('name', '').strip()
+                                    artist = (artist_data.get('name') or '').strip()
                                 elif isinstance(artist_data, list) and len(artist_data) > 0:
-                                    artist = artist_data[0].get('name', '').strip()
+                                    artist = (artist_data[0].get('name') or '').strip()
                             
                             logger.info(f"📊 Found in JSON-LD - artist: '{artist}', title: '{title}'")
                             break

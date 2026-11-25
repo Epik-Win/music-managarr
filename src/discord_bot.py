@@ -2326,8 +2326,10 @@ async def _handle_request(message, private, requested: bool = False):
                         logger.warning(f"⚠️ Could not extract metadata from link: {url}")
                         # Provide more helpful error message
                         error_msg = f"⚠️ Could not extract song information from: {url}\n\n**Troubleshooting:**\n"
-                        if 'youtube.com' in url.lower() or 'youtu.be' in url.lower():
-                            error_msg += "• YouTube: Make sure it's a music video (not a playlist, livestream, or private video)\n• Try a direct video link instead of a shortened URL\n"
+                        if 'list=' in url.lower():
+                            error_msg += "• YouTube: Make sure the playlist is public or unlisted and its videos still play\n"
+                        elif 'youtube.com' in url.lower() or 'youtu.be' in url.lower():
+                            error_msg += "• YouTube: Make sure it's a music video (not a livestream or private video)\n• Try a direct video link instead of a shortened URL\n"
                         elif 'tiktok.com' in url.lower():
                             error_msg += "• TikTok: Make sure the video is public and not deleted\n"
                         elif 'spotify.com' in url.lower():
@@ -2361,10 +2363,12 @@ async def _handle_request(message, private, requested: bool = False):
                         tracks = metadata.get('tracks', [])
                         total_tracks = len(tracks)
                         source = metadata.get('source') or 'link'
+                        unavailable = metadata.get('unavailable') or 0
+                        left_out = f" ({unavailable} private or deleted on YouTube, left out)" if unavailable else ""
                         
                         initial_embed = discord.Embed(
                             title="📋 Playlist Download Started",
-                            description=f"**{playlist_name}**\n{total_tracks} tracks",
+                            description=f"**{playlist_name}**\n{total_tracks} tracks{left_out}",
                             color=discord.Color.blue()
                         )
                         initial_embed.add_field(name="👤 User", value=plex_user, inline=False)
