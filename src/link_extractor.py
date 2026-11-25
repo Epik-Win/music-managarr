@@ -10,6 +10,7 @@ import requests
 import subprocess
 from typing import Optional, Dict, Any, List, Tuple
 
+import covers
 import geo_relay
 from naming import artist_from_channel, song_in_quotes
 
@@ -919,6 +920,7 @@ def extract_youtube_metadata(url: str) -> Optional[Dict[str, Any]]:
                         'album': '',
                         'url': video_url,
                         'duration': int(full_data.get('duration') or 0),
+                        'cover': covers.context_fields(title, uploader, full_data.get('description') or ''),
                     })
             
             if tracks:

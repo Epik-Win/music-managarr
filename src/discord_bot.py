@@ -775,6 +775,8 @@ def playlist_track_context(source: str, track: dict) -> str:
         parts.append(f"video_duration={int(track['duration'])}s")
     if track.get('deezer_track'):
         parts.append(f"deezer_track={track['deezer_track']}")
+    else:
+        parts += track.get('cover') or []
     return '; '.join(parts)
 
 
@@ -1109,15 +1111,20 @@ def _option_detail(option) -> str:
 def _choice_text(question: Dict) -> str:
     escape = discord.utils.escape_markdown
     request, source = escape(question['request']), question['source']
-    lines = [f"🤔 I couldn't tell which {source} result is **{request}**. Pick it from the list and press "
-             "**Select** (or pick *None of them match*)."]
+    if question.get('cover'):
+        lines = [f"🎤 **{request}** is a cover. Pick the one you want from the list, the official song first and "
+                 "covers below it, and press **Select** (or pick *None of them match*)."]
+    else:
+        lines = [f"🤔 I couldn't tell which {source} result is **{request}**. Pick it from the list and press "
+                 "**Select** (or pick *None of them match*)."]
     for i, option in enumerate(question['options']):
         detail = _option_detail(option)
         guess = "  ← my best guess" if question.get('suggestion') == i else ""
         lines.append(f"**{i + 1}.** {escape(_option_label(option))}" + (f" ({escape(detail)})" if detail else "")
                      + guess)
     minutes = max(1, int(question.get('timeout') or 0) // 60)
-    fallback = "my best guess" if question.get('suggestion') is not None else "the closest match"
+    fallback = question.get('fallback') or ("my best guess" if question.get('suggestion') is not None
+                                            else "the closest match")
     lines.append(f"-# No answer within {minutes} min and I'll take {fallback}. This message goes away once "
                  "it's settled; the request's result says what was chosen.")
     return "\n".join(lines)

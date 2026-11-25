@@ -77,6 +77,16 @@ replacing wrong audio — uses `downloader.Downloader.download_track()`.
    `cover.jpg`; Fix Metadata and the Lidarr reconcile file it the way Lidarr
    does later.
 
+**Covers.** A requested video that is a cover (`covers.py`: its title or
+channel says so, or it names a work on whose soundtrack another artist has the
+song while its performer has a release of their own) is settled before anything is searched. The official song is a Deezer
+track of the same title by the artist the video credits, or on that work's
+soundtrack; without either, one far more popular than every other is only a
+likely original. The requester chooses, the official song first and covers
+below it. Where nobody answers or can be asked, the official song is taken
+unless it is only a likely one. In every other list of results, covers come
+last unless a cover is asked for.
+
 **Asking the requester.** For a request posted in Discord and downloaded
 right away, the only result of a source that has the song's artist, title and
 version, and fits the linked video's length, is taken without asking anyone.

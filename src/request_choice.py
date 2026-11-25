@@ -114,9 +114,11 @@ def can_ask() -> bool:
 
 
 def ask(request: str, source: str, options: List[Dict[str, str]], next_step: Optional[str],
-        suggestion: Optional[int] = None) -> Union[int, str, None]:
+        suggestion: Optional[int] = None, cover: bool = False, fallback: str = "") -> Union[int, str, None]:
     """Ask the current requester which option ({"label", "detail"}) is
-    `request` and wait.
+    `request` and wait. `cover`: the request is a cover, and the options are
+    the official song and covers of it. `fallback` names what is taken when
+    nobody answers.
 
     Returns the chosen option's index, NEXT ("None of these"), or None when
     nobody answered in time (or the requester can't be reached), in which
@@ -129,6 +131,7 @@ def ask(request: str, source: str, options: List[Dict[str, str]], next_step: Opt
         "id": uuid.uuid4().hex[:12], "status": "new", "discord_user": requester.discord_user,
         "request": request, "source": source, "options": options[:24], "next_step": next_step,
         "suggestion": suggestion, "created": time.time(), "timeout": timeout_seconds(),
+        "cover": cover, "fallback": fallback,
     }
     _write(question)
     logger.info(f"❓ Asking {requester.discord_user} which {source} result is '{request}' "
@@ -158,7 +161,7 @@ def ask(request: str, source: str, options: List[Dict[str, str]], next_step: Opt
         now["status"] = "expired"
         _write(now)
         logger.info(f"❓ No answer from {requester.discord_user} for '{request}'")
-        requester.notes.append(f"{source}: no answer in time, my best guess was taken")
+        requester.notes.append(f"{source}: no answer in time, {fallback or 'my best guess'} was taken")
         return None
     finally:
         requester.waiting.clear()

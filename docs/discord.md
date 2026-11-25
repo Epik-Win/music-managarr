@@ -52,6 +52,14 @@ Everything else is private:
   you): the thread keeps just the request's result, which says what was
   chosen ("🙋 Your choice"). Requests queued while a cycle runs are
   downloaded by the cycle, which never asks: it takes the best match.
+- **A cover** (`covers.py`). When the video you link is a cover — its title or
+  channel says so, or it names a soundtrack another artist has the song on and
+  its performer released their own —
+  and Deezer has the official song, the bot asks which one you want: the
+  official song first, covers below it, the one you linked marked. Without an
+  answer the official song is taken when the video's own words lead to it (the
+  artist it credits, or that soundtrack), else the cover. Say "cover" in your
+  message to get the cover without a question.
 - **Slash command replies** are visible only to the person who used the
   command.
 

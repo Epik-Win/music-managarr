@@ -40,6 +40,7 @@ except ImportError:
     _unidecode = None  # type: ignore
     _UNIDECODE_AVAILABLE = False
 
+import covers
 import geo_relay
 import request_choice
 from naming import artist_from_channel, balanced, song_in_quotes, split_outside_brackets
@@ -1040,7 +1041,9 @@ class Downloader:
         unless its confidence is below REQUEST_CHOICE_BELOW (it is only
         guessing) or its pick clearly isn't the request: then the requester
         chooses. With no answer in time, the AI's pick (else `fallback`) is
-        taken."""
+        taken. Results that are covers come last, unless a cover is asked for."""
+        if 'cover' not in self._requested_variants(title, request_context):
+            candidates = sorted(candidates, key=covers.is_cover)
         same = [c for c in candidates if self._is_the_song(c, artist, title, request_context)]
         if len(same) == 1 and self._length_fits(same[0], request_context):
             logger.info(f"🎯 {source} has '{self._describe_candidate(same[0])}', the song itself")
@@ -1060,6 +1063,59 @@ class Downloader:
         if isinstance(answer, int):
             return candidates[answer]
         return choice or fallback
+
+    def _settle_cover(self, artist: str, title: str, url: Optional[str], request_context: Optional[str],
+                      video: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        """What to download instead of a requested cover, or None to go on as
+        requested. The requester chooses, the official song first and covers
+        below it; without an answer (or anyone to ask) the official song is
+        taken when the video's own words lead to it. A requester whose message
+        asks for the cover gets it.
+
+        Returns {'artist', 'title', 'album', 'context'} for a Deezer track, or
+        {'context'} for the linked video itself."""
+        fields = self._context_fields(request_context)
+        if fields.get('deezer_track') or covers.says_cover(re.sub(r'https?://\S+', ' ', fields.get('message', ''))):
+            return None
+        video_title = video.get(covers.TITLE_FIELD) or fields.get('video_title', '')
+        if not video_title:
+            return None
+        found = covers.find(title, artist, video_title,
+                            video.get(covers.UPLOADER_FIELD) or fields.get('video_uploader', ''),
+                            video.get(covers.NOTES_FIELD) or fields.get('video_description', ''),
+                            self._video_seconds(request_context))
+        if not found:
+            return None
+        request = f"{artist} - {title}" if artist else title
+        official = found['official'][0]
+        logger.info(f"🎤 '{request}' is a cover; the {'' if found['sure'] else 'likely '}official song: "
+                    f"{official['artist']} - {official['title']} ({official['album']})")
+
+        choices: List[Tuple[str, Optional[Dict[str, Any]]]] = [
+            ('Official' if found['sure'] else 'Likely the original', t) for t in found['official']]
+        choices += [('Cover, the one you linked' if t['linked'] else 'Cover', t) for t in found['covers']]
+        if self._requesters_video(url, request_context) and not any(t['linked'] for t in found['covers']):
+            choices.insert(len(found['official']), ('Cover, the video you linked', None))
+        taken: Optional[Dict[str, Any]] = official if found['sure'] else None
+        if request_choice.can_ask():
+            options = []
+            for kind, track in choices:
+                shown = track or {'title': video_title, 'duration': self._video_seconds(request_context)}
+                option = self._candidate_option(shown)
+                options.append({'label': option['label'], 'detail': ' · '.join(p for p in (kind, option['detail']) if p)})
+            answer = request_choice.ask(request, 'Cover', options, next_step='the usual search', cover=True,
+                                        fallback='the official song' if found['sure'] else 'the cover')
+            if answer == request_choice.NEXT:
+                return None
+            if isinstance(answer, int):
+                taken = choices[answer][1]
+                if taken is None:
+                    return {'context': f"{request_context}; linked_video=first"}
+        if taken is None:
+            return None
+        context = [f"source={fields.get('source') or 'request'}", f"album={taken['album']}", f"deezer_track={taken['id']}"]
+        return {'artist': taken['artist'], 'title': taken['title'], 'album': taken['album'],
+                'context': '; '.join(part.replace('; ', ', ') for part in context)}
 
     def _should_continue_with_ai(
         self,
@@ -3306,7 +3362,10 @@ class Downloader:
         return linked if 'youtube.com/watch' in linked and linked == self._single_video_url(url or '') else ''
 
     def _link_first(self, tools: List[str], url: Optional[str], request_context: Optional[str]) -> List[str]:
-        """A video the requester linked comes before searching SoundCloud."""
+        """A video the requester linked comes before searching SoundCloud, and
+        before everything when they chose that video itself."""
+        if self._context_fields(request_context).get('linked_video') == 'first' and 'yt-dlp' in tools:
+            return ['yt-dlp'] + [t for t in tools if t != 'yt-dlp']
         if self._requesters_video(url, request_context) and {'yt-dlp', 'soundcloud'} <= set(tools):
             tools = [t for t in tools if t != 'yt-dlp']
             tools.insert(tools.index('soundcloud'), 'yt-dlp')
@@ -3699,9 +3758,10 @@ class Downloader:
         """Download one track and file it under <target_dir>/<Artist>/<Album>/.
 
         Pipeline:
-        1. Resolve the requested artist/title/album (request context, metadata
-           sources, name cleanup) and skip if the track already exists or was
-           1-star blacklisted.
+        1. Settle a cover (covers.py: the official song first), resolve the
+           requested artist/title/album (request context, metadata sources,
+           name cleanup) and skip if the track already exists or was 1-star
+           blacklisted.
         2. Album requests go to Lidarr first when it is configured.
         3. Try deemix → soundcloud → yt-dlp, validating each result against the
            requested track.
@@ -3725,6 +3785,13 @@ class Downloader:
             if self._block_until_arl_refresh_if_stale('download request'):
                 result['error'] = 'Deezer ARL is stale — downloads are paused until admin refreshes the token.'
                 return result
+
+            request_context, video = covers.take_fields(request_context)
+            settled = self._settle_cover(artist, title, url, request_context, video)
+            if settled:
+                request_context = settled['context']
+                if 'title' in settled:
+                    artist, title, album, url = settled['artist'], settled['title'], settled['album'], None
 
             request_context_metadata = self._resolve_effective_download_metadata(
                 artist=artist, title=title, album=album, request_context=request_context,
