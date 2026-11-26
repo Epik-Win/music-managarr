@@ -88,6 +88,15 @@ def place(user: str, playlist: str, path: str, after: Optional[str] = None, inde
     _add_places([_entry(user, playlist, path, after, index)])
 
 
+def place_playlist(user: str, title: str, files: List[str], only: Optional[Iterable[str]] = None) -> None:
+    """Place a playlist's songs (those in `only`, else all) in the user's
+    playlist of that title, in order; the playlist is made if it is missing."""
+    files = [_norm(f) for f in files if f]
+    only = None if only is None else {_norm(f) for f in only}
+    _add_places([_entry(user, title, f, files[i - 1] if i else None, i, create=True)
+                 for i, f in enumerate(files) if only is None or f in only])
+
+
 def _entry(user: str, playlist: str, path: str, after: Optional[str], index: int, create: bool = False) -> dict:
     """A placement; with `create`, a playlist that doesn't exist yet is made for it."""
     return {"user": user, "playlist": playlist, "path": _norm(path), "after": _norm(after),
@@ -255,8 +264,7 @@ def make_playlist(server, section, title: str, files: Iterable[str], user: str, 
             new = [t for t in tracks if t.ratingKey not in have]
             if new:
                 playlist.addItems(new)
-    _add_places([_entry(user, title, f, files[i - 1] if i else None, i, create=True)
-                 for i, f in enumerate(files) if f in missing])
+    place_playlist(user, title, files, only=missing)
     if missing:
         logger.info(f"📋 '{title}': {len(missing)} song(s) not in Plex yet; added once Plex shows them")
     return playlist

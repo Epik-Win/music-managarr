@@ -18,7 +18,10 @@ cycle may run only once a month. Each run:
    "RISE" for the song with vocals;
 3. puts whatever neither could identify in the admin's **Manual Fix**
    playlist, removes songs from it once they are complete, and keeps one
-   short notice about it in the admin's Discord thread (`manual_fix.py`);
+   short notice about it in the admin's Discord thread (`manual_fix.py`).
+   Every user has their own Fix Metadata playlist, but Manual Fix is the
+   admin's alone: a song another user flagged that can't be fixed goes only
+   there (it leaves the user's Fix Metadata, and they never get a Manual Fix);
 4. reconciles albums with Lidarr: folds second copies of an album into
    Lidarr's version, removes duplicate songs and merges albums Plex split in
    two (`album_artist_merger.lidarr_reconcile`).

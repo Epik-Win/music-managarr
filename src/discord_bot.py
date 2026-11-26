@@ -805,6 +805,69 @@ def playlist_matches_own_album(playlist_name: str, downloaded_tracks: list) -> b
     return ratio >= 0.82
 
 
+def requester_server(plex_url: str, plex_user: str):
+    """The requester's own Plex connection: the admin's token for the admin
+    (the mapping's first user), else a Home user token minted from it. None
+    when it can't be had: a playlist is never made on someone else's account."""
+    import plex_auth
+    admin = next(iter(DISCORD_TO_PLEX_MAPPING.values()), '')
+    if not plex_user or plex_user.lower() == admin.lower():
+        return PlexServer(plex_url, plex_auth.admin_token())
+    try:
+        token = plex_auth.home_user_token(plex_url, plex_user)
+    except Exception as exc:
+        logger.warning(f"No Plex token for {plex_user}: {exc}")
+        token = None
+    return PlexServer(plex_url, token) if token else None
+
+
+def _file_by_name(section, want_artist: str, want_title: str) -> Optional[str]:
+    """The file of a library song found by its names (a song the library
+    already had comes back from a request without a file)."""
+    from difflib import SequenceMatcher
+    from paths import host_to_container
+    want = (want_artist or '').lower().strip()
+    for track in section.searchTracks(title=want_title):
+        for name in (track.grandparentTitle or '', getattr(track, 'originalTitle', '') or ''):
+            name = name.lower().strip()
+            if name and (name == want or SequenceMatcher(None, name, want).ratio() >= 0.85):
+                return host_to_container(track.media[0].parts[0].file)
+    return None
+
+
+def make_request_playlist(plex_url: str, plex_user: str, playlist_name: str, downloaded_tracks: list):
+    """The requester's Plex playlist for a playlist request, in its order,
+    made as that user once Plex has scanned the files; songs Plex shows later
+    are added in their places by the metadata daemon (playlist_keeper). When
+    no connection as the requester can be had, the daemon makes it for them.
+    Returns the playlist, or None when it is left to the daemon."""
+    import playlist_keeper
+    import plex_auth
+    server = requester_server(plex_url, plex_user)
+    section = find_music_section(server) if server is not None else None
+    lookup = section or find_music_section(PlexServer(plex_url, plex_auth.admin_token()))
+    files = []
+    for t_info in downloaded_tracks:
+        found = t_info.get('file')
+        if not found and lookup is not None:
+            try:
+                found = _file_by_name(lookup, t_info['artist'], t_info['title'])
+            except Exception as exc:
+                logger.warning(f"  Error searching Plex for '{t_info['str']}': {exc}")
+        if found:
+            files.append(found)
+        else:
+            logger.warning(f"  ✗ Not found in Plex: {t_info['str']}")
+    if section is None:
+        logger.warning(f"No Plex connection as {plex_user}: the metadata daemon makes '{playlist_name}' for them")
+        playlist_keeper.place_playlist(plex_user, playlist_name, files)
+        return None
+    playlist = playlist_keeper.make_playlist(server, section, playlist_name, files, plex_user)
+    if playlist is None:
+        logger.warning(f"No songs of '{playlist_name}' in Plex yet; it is made once Plex shows them")
+    return playlist
+
+
 async def refresh_plex_library(plex_user: str):
     """Ask Plex to rescan the shared music library after a download."""
     if not PLEX_AVAILABLE:
@@ -2588,62 +2651,11 @@ async def _handle_request(message, private, requested: bool = False):
                                 if not plex_url_pl:
                                     logger.warning("PLEX_URL unavailable — skipping playlist creation")
                                 else:
-                                    import plex_auth
-                                    plex_pl = PlexServer(plex_url_pl, plex_auth.admin_token())
-                                    music_lib_pl = find_music_section(plex_pl)
-
-                                    if not music_lib_pl:
-                                        logger.warning(f"Could not find a Plex music library for user {plex_user} — skipping playlist")
-                                    else:
-                                        logger.info(f"📚 Using library '{music_lib_pl.title}' for playlist creation")
-
-                                        # The playlist is made from the downloaded files, in
-                                        # order, once Plex has scanned them; songs Plex shows
-                                        # later are added then (playlist_keeper). A song the
-                                        # library already had comes without a file: found by name.
-                                        import playlist_keeper
-                                        from paths import host_to_container
-
-                                        def _by_name(want_artist: str, want_title: str):
-                                            from difflib import SequenceMatcher
-                                            want = want_artist.lower().strip()
-                                            for pt in music_lib_pl.searchTracks(title=want_title):
-                                                for c in (pt.grandparentTitle or '', getattr(pt, 'originalTitle', '') or ''):
-                                                    c = c.lower().strip()
-                                                    if c and (c == want or SequenceMatcher(None, c, want).ratio() >= 0.85):
-                                                        return host_to_container(pt.media[0].parts[0].file)
-                                            return None
-
-                                        def _make_playlist():
-                                            files = []
-                                            for t_info in downloaded_tracks:
-                                                found = t_info.get('file')
-                                                if not found:
-                                                    try:
-                                                        found = _by_name(t_info['artist'], t_info['title'])
-                                                    except Exception as _te:
-                                                        logger.warning(f"  Error searching Plex for '{t_info['str']}': {_te}")
-                                                if found:
-                                                    files.append(found)
-                                                else:
-                                                    logger.warning(f"  ✗ Not found in Plex: {t_info['str']}")
-                                            # Made on the admin's server: the mapping's first user.
-                                            owner = next(iter(DISCORD_TO_PLEX_MAPPING.values()), '')
-                                            return playlist_keeper.make_playlist(
-                                                plex_pl, music_lib_pl, playlist_name, files, owner)
-
-                                        try:
-                                            playlist_obj = await asyncio.to_thread(_make_playlist)
-                                            if playlist_obj is not None:
-                                                logger.info(
-                                                    f"✅ Created Plex playlist '{playlist_name}' "
-                                                    f"with {len(playlist_obj.items())}/{len(downloaded_tracks)} tracks"
-                                                )
-                                            else:
-                                                logger.warning(f"No tracks in Plex yet for playlist '{playlist_name}'; "
-                                                               f"it is made once Plex shows them")
-                                        except Exception as _pe:
-                                            logger.error(f"❌ Failed to create Plex playlist '{playlist_name}': {_pe}")
+                                    playlist_obj = await asyncio.to_thread(
+                                        make_request_playlist, plex_url_pl, plex_user, playlist_name, downloaded_tracks)
+                                    if playlist_obj is not None:
+                                        logger.info(f"✅ Created {plex_user}'s Plex playlist '{playlist_name}' "
+                                                    f"with {len(playlist_obj.items())}/{len(downloaded_tracks)} tracks")
 
                             except Exception as e:
                                 logger.error(f"❌ Error creating Plex playlist for user {plex_user}: {e}", exc_info=True)
