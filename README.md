@@ -130,12 +130,12 @@ docker compose up -d
 docker logs -f musicaio
 ```
 
-The `musicai` and `metadata-proxy` services use published GitHub Container
-Registry images:
+The `musicai` and `metadata-proxy` services run one published GitHub
+Container Registry image,
 [`ghcr.io/epik-win/music-managarr`](https://github.com/Epik-Win/music-managarr/pkgs/container/music-managarr)
-and `ghcr.io/epik-win/music-managarr-metadata-proxy`. GitHub publishes
-`latest` from `main`; the Dockerfiles remain available for local development
-and custom builds.
+(the proxy with `command: metadata-proxy`), so one pull updates both. GitHub
+publishes `latest` from `main`; the Dockerfile remains available for local
+development and custom builds.
 
 Then:
 

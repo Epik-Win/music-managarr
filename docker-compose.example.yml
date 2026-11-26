@@ -151,14 +151,21 @@ services:
     restart: unless-stopped
 
   # Forward proxy for musicai's metadata lookups, outside its VPN (some
-  # services, like Genius, refuse VPN addresses). No published port. Fixed IP:
+  # services, like Genius, refuse VPN addresses): the same image as musicai,
+  # run as tinyproxy, so one pull updates both. No published port. Fixed IP:
   # musicai reaches it past the VPN's DNS.
   metadata-proxy:
-    image: ghcr.io/epik-win/music-managarr-metadata-proxy:latest
+    image: ghcr.io/epik-win/music-managarr:latest
     container_name: metadata-proxy
+    command: metadata-proxy
     networks:
       default_net:
         ipv4_address: 172.21.0.248
+    healthcheck:
+      # Any answer from the proxy itself (it refuses localhost) means it is up.
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-m", "5", "-x", "http://127.0.0.1:8888", "http://tinyproxy.stats/"]
+      interval: 60s
+      timeout: 5s
     restart: unless-stopped
 
   lidarr:

@@ -150,8 +150,9 @@ service-name DNS, so neighbouring containers are reached by IP (a static
 address for `bgutil-provider` and `metadata-proxy`) or through `extra_hosts`.
 
 **Only downloads need the tunnel.** With `METADATA_PROXY` set, metadata
-lookups leave through the `metadata-proxy` service (tinyproxy, built from
-`docker/metadata-proxy`), on the Docker network outside the VPN: lyrics
+lookups leave through the `metadata-proxy` service (tinyproxy: the MusicAI
+image run with `command: metadata-proxy`, configured by
+`docker/tinyproxy.conf`), on the Docker network outside the VPN: lyrics
 (Genius's API, LRCLIB), tags and cover art (MusicBrainz, Cover Art Archive,
 Discogs, Last.fm, iTunes), fingerprints (AcoustID, ACRCloud, audd, Shazam)
 and Spotify/Billboard. It is an allowlist (`metadata_proxy.py`,
@@ -159,6 +160,10 @@ and Spotify/Billboard. It is an allowlist (`metadata_proxy.py`,
 and Deezer, YouTube and SoundCloud are never on it, even for lookups, since
 downloads come from them. If the proxy is down, lookups fall back to the
 tunnel.
+
+The proxy is a container of its own because the VPN covers the whole
+`musicai` container: Mullvad's split tunnelling (`mullvad-exclude`) doesn't
+work inside a container, and `musicai` can't make a network of its own for it.
 
 ## Region locks and bot walls
 

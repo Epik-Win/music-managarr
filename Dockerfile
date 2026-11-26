@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     gnupg \
     unzip \
+    tinyproxy \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------
@@ -62,6 +63,12 @@ RUN pip install --no-cache-dir -U yt-dlp yt-dlp-ejs spotifyscraper ytmusicapi
 # each other by name), next to the container entrypoint.
 COPY src/ ./
 COPY docker/entrypoint.sh ./docker-entrypoint.sh
+
+# The metadata proxy: the same image run as a second container with
+# `command: metadata-proxy`, outside the VPN (src/metadata_proxy.py).
+COPY docker/tinyproxy.conf /etc/tinyproxy/tinyproxy.conf
+RUN printf '#!/bin/sh\nexec tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf\n' > /usr/local/bin/metadata-proxy \
+    && chmod +x /usr/local/bin/metadata-proxy
 
 # Create volume mount points
 RUN mkdir -p /music/albums /config /app/data
