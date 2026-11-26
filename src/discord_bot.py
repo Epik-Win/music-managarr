@@ -1063,7 +1063,19 @@ def _load_cycle_user_state() -> None:
                 logger.info(f"Restored cycle status state for {len(loaded)} user(s) from disk")
     except Exception as _e:
         logger.debug(f"Could not load persisted cycle status state: {_e}")
-_PENDING_ERROR_MESSAGES: List[str] = []
+# Errors shown in the cycle status message: (text, shown until, as time.time();
+# None for "until the bot restarts"). Each goes once its delete_after is up.
+_PENDING_ERROR_MESSAGES: List[tuple] = []
+_ERRORS_SHOWN = 20
+
+
+def _drop_expired_errors(now: Optional[float] = None) -> bool:
+    """Forget the errors whose time is up; True when one went."""
+    now = time.time() if now is None else now
+    kept = [(text, until) for text, until in _PENDING_ERROR_MESSAGES if until is None or until > now]
+    gone = len(kept) != len(_PENDING_ERROR_MESSAGES)
+    _PENDING_ERROR_MESSAGES[:] = kept[-_ERRORS_SHOWN:]
+    return gone
 
 
 
@@ -1545,7 +1557,7 @@ def _build_cycle_status_embed() -> discord.Embed:
 
     if _PENDING_ERROR_MESSAGES:
         description_parts.append("\n**Recent errors:**")
-        for error in _PENDING_ERROR_MESSAGES[-5:]:
+        for error, _until in _PENDING_ERROR_MESSAGES[-5:]:
             cleaned = error.strip().replace('\n', ' ')
             description_parts.append(f"• {cleaned[:180]}")
 
@@ -2021,7 +2033,16 @@ async def check_arl_and_notifications() -> None:
     except Exception as _e:
         logger.debug(f"Request question delivery error: {_e}")
 
-    # -- 3. Drain general error notification queue (notify_discord_error) ----------
+    # -- 3. Errors queued by notify_discord_error --------------------------------
+    await _show_error_notices()
+
+
+async def _show_error_notices() -> bool:
+    """Error notices (notify_discord_error) in the cycle status message, each
+    for its delete_after. The message is edited only when an error comes or
+    goes: editing it on every poll gets the bot rate limited by Discord.
+    Returns whether it changed."""
+    errors_changed = _drop_expired_errors()
     if os.path.exists(_NOTIF_FILE):
         lines_to_keep = []
         sent = 0
@@ -2040,28 +2061,36 @@ async def check_arl_and_notifications() -> None:
 
                 ntype = entry.get('type', 'error')
                 if ntype in ('cycle_start', 'cycle_complete'):
-                    # Handled directly by the polling task (section 0 above).
-                    # Drop these entries — posting them here would double-post.
+                    # check_arl_and_notifications reads cycles from their own
+                    # files; posting these too would double-post.
                     continue
 
                 if sent < 10:
                     msg = entry.get('message', 'Unknown error')
-                    _PENDING_ERROR_MESSAGES.append(msg)
+                    try:
+                        shown_for = float(entry.get('delete_after', 300) or 0)
+                    except (TypeError, ValueError):
+                        shown_for = 300.0
+                    _PENDING_ERROR_MESSAGES.append((msg, time.time() + shown_for if shown_for > 0 else None))
                     sent += 1
                 else:
                     lines_to_keep.append(line)
 
             # Rewrite file with unsent lines
-            with open(_NOTIF_FILE, 'w') as _f:
-                _f.write('\n'.join(lines_to_keep) + ('\n' if lines_to_keep else ''))
-
-            if _PENDING_ERROR_MESSAGES:
-                channel = await _resolve_configured_channel(DISCORD_MAIN_CHANNEL, DISCORD_MAIN_CHANNEL_NAME)
-                if channel:
-                    embed = _build_cycle_status_embed()
-                    await _ensure_cycle_status_message(channel, embed)
+            if raw_lines:
+                with open(_NOTIF_FILE, 'w') as _f:
+                    _f.write('\n'.join(lines_to_keep) + ('\n' if lines_to_keep else ''))
+            errors_changed = errors_changed or sent > 0
         except Exception as _e:
             logger.debug(f"Notification drain error: {_e}")
+    if errors_changed:
+        try:
+            channel = await _resolve_configured_channel(DISCORD_MAIN_CHANNEL, DISCORD_MAIN_CHANNEL_NAME)
+            if channel:
+                await _ensure_cycle_status_message(channel, _build_cycle_status_embed())
+        except Exception as _e:
+            logger.debug(f"Could not show the errors in the status message: {_e}")
+    return errors_changed
 
 
 @check_arl_and_notifications.before_loop

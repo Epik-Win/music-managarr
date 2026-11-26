@@ -21,7 +21,7 @@ import sqlite3
 import time
 import subprocess
 import select
-from collections import deque
+from collections import Counter, deque
 import socket
 import sys
 import warnings
@@ -135,11 +135,6 @@ SOON_TO_GO_RESCUE_RATING = float(os.environ.get("SOON_TO_GO_RESCUE_RATING", "8")
 SOON_TO_GO_PLAYLIST = "Soon to go"
 # Album completion is for albums a user clearly loves: ALBUM_COMPLETION_MIN_LOVED
 # of its songs scoring ALBUM_COMPLETION_SCORE (a graduated song) or rated 4★+.
-# Trending picks skip an artist the user clearly doesn't like: rated 1★ or
-# less with nothing rated 3★ or more (Plex ratings are 0–10), or several songs
-# in the library a month or more and none ever played.
-DISLIKED_RATING, LIKED_RATING = 2, 6
-UNPLAYED_ARTIST_SONGS, UNPLAYED_ARTIST_DAYS = 5, 30
 ALBUM_COMPLETION_SCORE = float(os.environ.get("ALBUM_COMPLETION_SCORE", "0.55"))
 ALBUM_COMPLETION_MIN_LOVED = int(os.environ.get("ALBUM_COMPLETION_MIN_LOVED", "3"))
 ALBUM_COMPLETION_MAX_ALBUMS = int(os.environ.get("ALBUM_COMPLETION_MAX_ALBUMS", "2"))
@@ -247,6 +242,10 @@ def _followed_on_instance(instance, exclude_user=None):
     return followed
 LIDARR_USE_AS_METADATA = os.environ.get("LIDARR_USE_AS_METADATA", "false").strip().lower() == "true"
 TOP_ARTIST_LIMIT = max(1, int(os.environ.get("TOP_ARTIST_LIMIT", "5")))
+# Songs a cycle downloads from the user's taste (taste.py), and at most this
+# many each from the trending charts and the popular playlists, best fit first.
+TASTE_PICKS = max(1, int(os.environ.get("TASTE_PICKS", "20")))
+CHART_PICKS = max(1, int(os.environ.get("CHART_PICKS", "10")))
 
 # Admin account token; per-user Home tokens are cached in the database.
 # No validation needed here as connect_plex() will handle token retrieval
@@ -642,6 +641,30 @@ def run_discord_request_processor_loop(analyzer_ref, check_interval_seconds=30):
             time.sleep(check_interval_seconds)
 
 
+_BILLBOARD_HEADERS = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36'}
+
+
+def _billboard_chart(name: str) -> list:
+    """A Billboard chart's songs from its public page, best first, each with
+    `rank`, `title` and `artist`. Only these are read: billboard.py also reads
+    the last-week, peak and weeks columns and fails on the whole chart when
+    one of them changes form."""
+    from types import SimpleNamespace
+    from bs4 import BeautifulSoup
+    response = requests.get(f"https://www.billboard.com/charts/{name}/", headers=_BILLBOARD_HEADERS, timeout=20)
+    response.raise_for_status()
+    songs = []
+    for row in BeautifulSoup(response.text, 'html.parser').select('ul.o-chart-results-list-row'):
+        title = row.select_one('#title-of-a-story')
+        artist = row.select_one('#title-of-a-story + span.c-label')
+        if title and artist:
+            songs.append(SimpleNamespace(rank=len(songs) + 1, title=title.get_text(' ', strip=True),
+                                         artist=re.sub(r'\s+', ' ', artist.get_text(' ', strip=True))))
+    if not songs:
+        raise ValueError(f"no songs on Billboard's '{name}' page")
+    return songs
+
+
 class MusicAIAnalyzer:
     def __init__(self):
         self.scaler = StandardScaler()
@@ -649,6 +672,10 @@ class MusicAIAnalyzer:
         # Every song this cycle downloaded, tagged with the cycle playlist it goes in.
         self.cycle_downloads = []
         self.cycle_started_at = None
+        # This user's taste (taste.py), read at the start of each cycle; None
+        # when it could not be read, and the older discovery runs instead.
+        self.taste = None
+        self.picked_artists = None
         self.init_database()
         self.connect_plex()
     
@@ -1114,19 +1141,14 @@ class MusicAIAnalyzer:
             api_status['mutagen'] = False
             logger.warning(f"✗ Mutagen library check failed: {e}")
         
-        # Check Billboard API
+        # Billboard charts are read from their public pages (_billboard_chart).
         try:
-            import billboard
-            # Test by fetching a small chart to verify connectivity
-            chart = billboard.ChartData('hot-100', fetch=False)  # Don't fetch immediately
+            import bs4  # noqa: F401
             api_status['billboard'] = True
-            logger.info("✓ Billboard API is available")
+            logger.info("✓ Billboard charts can be read")
         except ImportError:
             api_status['billboard'] = False
-            logger.warning("✗ Billboard library not installed (optional)")
-        except Exception as e:
-            api_status['billboard'] = False
-            logger.warning(f"✗ Billboard API check failed: {e}")
+            logger.warning("✗ BeautifulSoup not installed: no Billboard charts")
         
         # Check TikTok API (TikTok API availability check)
         try:
@@ -2088,7 +2110,11 @@ class MusicAIAnalyzer:
         try:
             import pylast
             import traceback
-            
+            # pylast logs every API call and its HTTP request at INFO: one
+            # lookup per loved song would bury the cycle's own log.
+            for name in ('pylast', 'httpx'):
+                logging.getLogger(name).setLevel(logging.WARNING)
+
             # Convert Plex objects to clean strings
             artist_str = str(artist)
             title_str = str(title)
@@ -2121,59 +2147,23 @@ class MusicAIAnalyzer:
                 artist_str.replace('_', ' '),
                 re.sub(r'\s+', ' ', artist_str.replace('-', ' ')).strip(),
             ]))
-            track_obj = None
-            lookup_artist = artist_str
+            # get_track() checks nothing (and a track's `info` is empty in this
+            # pylast), so the similar-tracks call itself is the lookup.
+            similar_tracks, lookup_artist = [], artist_str
             for candidate in artist_candidates:
                 try:
-                    candidate_track = network.get_track(candidate, title_str)
-                    candidate_track.info
-                    track_obj = candidate_track
-                    lookup_artist = candidate
-                    if candidate != artist_str:
-                        logger.info(f"✓ Last.FM artist normalization matched '{artist_str}' as '{candidate}'")
-                    break
+                    similar_tracks = network.get_track(candidate, title_str).get_similar(limit=limit)
                 except Exception as lookup_error:
                     logger.debug(f"Last.FM lookup failed for artist variant '{candidate}': {lookup_error}")
-
-            if track_obj is None:
-                logger.warning(f"❌ Last.FM track not found for '{artist_str}' - '{title_str}'")
+                    continue
+                if similar_tracks:
+                    lookup_artist = candidate
+                    break
+            if not similar_tracks:
+                logger.info(f"⚠️ No similar tracks on Last.FM for '{artist_str}' - '{title_str}'")
                 return self._get_similar_tracks_from_deezer(artist_str, title_str, limit)
-            
-            logger.debug(f"  ✓ Found track object: {track_obj}")
-            
-            # Check if track actually exists on Last.FM before trying to get similar
-            try:
-                track_info = track_obj.info
-                if not track_info:
-                    logger.debug(f"  Track '{lookup_artist}' - '{title_str}' not found on Last.FM")
-                    return self._get_similar_tracks_from_deezer(lookup_artist, title_str, limit)
-                logger.debug(f"  ✓ Confirmed track exists on Last.FM (listeners: {getattr(track_info, 'listeners', 'N/A')})")
-            except Exception as e_info:
-                logger.debug(f"  Could not verify track existence on Last.FM: {repr(e_info)}")
-                # Continue anyway - might still work
-            
-            # Attempt to retrieve similar tracks and provide detailed diagnostics on failure
-            try:
-                similar_tracks = track_obj.get_similar(limit=limit)
-                logger.info(f"📊 Last.FM returned {len(similar_tracks)} similar track(s) for '{artist_str} - {title_str}'")
-                
-                if not similar_tracks:
-                    logger.info(f"⚠️ No similar tracks found on Last.FM for '{artist_str}' - '{title_str}' (track may be too obscure)")
-                    return self._get_similar_tracks_from_deezer(artist_str, title_str, limit)
-            except Exception as e_sim:
-                # Diagnostic: attempt to fetch artist presence to give more context
-                logger.debug(f"  get_similar raised: {repr(e_sim)}")
-                try:
-                    artist_obj = network.get_artist(artist_str)
-                    logger.debug(f"  Artist object found: {artist_obj}")
-                except Exception as e_artist:
-                    logger.debug(f"  get_artist failed: {repr(e_artist)}")
+            logger.info(f"📊 Last.FM returned {len(similar_tracks)} similar track(s) for '{lookup_artist} - {title_str}'")
 
-                # Return empty result but keep rich logs for troubleshooting
-                logger.warning(f"❌ Could not get similar tracks from Last.FM for '{artist_str}' - '{title_str}': {repr(e_sim)}")
-                logger.debug(traceback.format_exc())
-                return self._get_similar_tracks_from_deezer(artist_str, title_str, limit)
-            
             for idx, similar_track in enumerate(similar_tracks, 1):
                 try:
                     artist_name = str(similar_track.item.artist.name)
@@ -2315,11 +2305,8 @@ class MusicAIAnalyzer:
         recommendations = []
         
         try:
-            import billboard
-            
-            # Get current Hot 100 chart
-            chart = billboard.ChartData('hot-100')
-            
+            chart = _billboard_chart('hot-100')
+
             logger.info(f"📊 Fetched Billboard Hot 100 chart ({len(chart)} tracks)")
             
             # Extract top tracks
@@ -2348,14 +2335,6 @@ class MusicAIAnalyzer:
             
             return recommendations
         
-        except ImportError:
-            error_msg = "billboard-py library not installed. Cannot fetch Billboard charts."
-            logger.error(error_msg)
-            try:
-                notify_discord_error(f"📊 Billboard Hot 100 Import Error\n{error_msg}")
-            except Exception:
-                pass
-            return recommendations
         except Exception as e:
             error_msg = f"Error fetching Billboard Hot 100: {str(e)}"
             logger.warning(error_msg)
@@ -2379,16 +2358,14 @@ class MusicAIAnalyzer:
         all_recommendations = []
         
         try:
-            import billboard
-            
-            # Map common genres to Billboard chart names
+            # Plex genres → Billboard song charts (the slugs of billboard.com/charts/…)
             genre_chart_mapping = {
-                'pop': 'hot-100',  # Pop = Main Hot 100
-                'rap': 'rap',      # Rap/Hip-hop
-                'hip-hop': 'rap',
-                'hip hop': 'rap',
-                'r&b': 'r-b-hip-hop',  # R&B/Hip-hop
-                'rb': 'r-b-hip-hop',
+                'pop': 'pop-songs',
+                'rap': 'rap-song',
+                'hip-hop': 'rap-song',
+                'hip hop': 'rap-song',
+                'r&b': 'r-b-hip-hop-songs',
+                'rb': 'r-b-hip-hop-songs',
                 'rock': 'rock',    # Rock
                 'alternative': 'alternative-songs',
                 'alt': 'alternative-songs',
@@ -2398,22 +2375,28 @@ class MusicAIAnalyzer:
                 'dance': 'dance-electronic-songs',
                 'latin': 'latin-songs',
                 'latino': 'latin-songs',
-                'rnb': 'r-b-hip-hop',
+                'rnb': 'r-b-hip-hop-songs',
                 'soundtrack': 'hot-100',  # Use main chart for soundtracks
             }
             
-            # Process each user genre
+            # Process each user genre; Plex joins an album's genres ("Rap,
+            # Electronic", "Pop/Rock"), so the first one with a chart is used.
+            # Each chart is read once, for the first genre that leads to it.
+            charts_read = set()
             for genre_name, track_count, avg_score in user_genres:
                 if not genre_name or track_count == 0:
                     continue
                 
-                # Find matching Billboard chart
-                chart_name = genre_chart_mapping.get(genre_name.lower(), 'hot-100')
+                parts = [g.strip() for g in re.split(r'[,/]', genre_name.lower()) if g.strip()]
+                chart_name = next((genre_chart_mapping[g] for g in parts if g in genre_chart_mapping), 'hot-100')
+                if chart_name in charts_read:
+                    continue
+                charts_read.add(chart_name)
                 
                 logger.info(f"🎵 Fetching Billboard charts for genre: {genre_name} (using chart: {chart_name})")
                 
                 try:
-                    chart = billboard.ChartData(chart_name)
+                    chart = _billboard_chart(chart_name)
                     logger.info(f"  ✓ Found {len(chart)} tracks in {chart_name} chart")
                     
                     # Extract top tracks for this genre
@@ -2456,14 +2439,6 @@ class MusicAIAnalyzer:
             logger.info(f"🎵 Total Billboard recommendations by genre: {len(all_recommendations)}")
             return all_recommendations
         
-        except ImportError:
-            error_msg = "billboard-py library not installed. Cannot fetch Billboard charts."
-            logger.error(error_msg)
-            try:
-                notify_discord_error(f"📊 Billboard Import Error\n{error_msg}")
-            except Exception:
-                pass
-            return all_recommendations
         except Exception as e:
             error_msg = f"Error fetching Billboard charts by genre: {str(e)}"
             logger.warning(error_msg)
@@ -3133,13 +3108,11 @@ class MusicAIAnalyzer:
 
     
     def disliked_artists(self) -> set:
-        """Artists this user clearly doesn't like (primary-artist keys): one of
-        their songs rated DISLIKED_RATING (1★) or less and none LIKED_RATING
-        (3★) or more, or UNPLAYED_ARTIST_SONGS songs here for
-        UNPLAYED_ARTIST_DAYS days or more and none ever played. Picks the user
-        never asked for (trending charts) leave them out."""
-        from lidarr_catalog import compact
-        from metadata_repair import primary_artist
+        """Artists this user clearly doesn't like (taste.disliked_artists):
+        one of their songs rated 1★ and none 3★ or more, or several songs here
+        for a month and none ever played. Picks the user never asked for
+        (trending charts) leave them out."""
+        import taste
         try:
             conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT)
             rows = conn.execute('SELECT artist, rating, view_count, date_added FROM track_scores').fetchall()
@@ -3147,26 +3120,14 @@ class MusicAIAnalyzer:
         except sqlite3.Error as e:
             logger.warning(f"Could not read the scores for disliked artists: {e}")
             return set()
-        old = time.time() - UNPLAYED_ARTIST_DAYS * 86400
-        stats: Dict[str, Dict[str, int]] = {}
-        for artist, rating, plays, added in rows:
-            if not artist or artist.startswith('<'):
-                continue                    # a Plex object's text ("<Artist:…>"), not a name
-            key = compact(primary_artist(artist))
-            s = stats.setdefault(key, {'low': 0, 'high': 0, 'played': 0, 'old_unplayed': 0})
-            rating = rating or 0
-            s['low'] += 0 < rating <= DISLIKED_RATING
-            s['high'] += rating >= LIKED_RATING
-            s['played'] += (plays or 0) > 0
-            s['old_unplayed'] += not plays and bool(added) and added <= old
-        return {key for key, s in stats.items() if key and not s['high'] and
-                (s['low'] or (not s['played'] and s['old_unplayed'] >= UNPLAYED_ARTIST_SONGS))}
+        return taste.disliked_artists(taste.Song(key='', artist=artist or '', title='', rating=rating or 0,
+                                                 plays=plays or 0, added=added or 0)
+                                      for artist, rating, plays, added in rows)
 
     def without_disliked_artists(self, tracks: List[Dict[str, Any]], source: str) -> List[Dict[str, Any]]:
-        from lidarr_catalog import compact
-        from metadata_repair import primary_artist
+        import taste
         disliked = self.disliked_artists()
-        kept = [t for t in tracks if compact(primary_artist(t.get('artist') or '')) not in disliked]
+        kept = [t for t in tracks if taste.artist_key(t.get('artist')) not in disliked]
         skipped = sorted({t.get('artist') for t in tracks} - {t.get('artist') for t in kept})
         if skipped:
             logger.info(f"⏭️ {source}: skipping {len(tracks) - len(kept)} song(s) by artists this user "
@@ -3229,8 +3190,88 @@ class MusicAIAnalyzer:
             albums.append({'artist': artist, 'album': album.title, 'missing': missing, 'loved': loved})
         return albums
 
+    # -- taste (taste.py) -------------------------------------------------------
+
+    def build_taste(self, analyzed_tracks):
+        """This user's taste: the songs the cycle analysed (with this user's own
+        plays, skips and ratings), their plays in Plex's history, and Plex's
+        metadata of their favourite artists, read through the admin connection
+        (only the server owner can read the history). Written to taste.json in
+        the user's data folder. None when it can't be read."""
+        import plex_auth
+        import taste
+        if not analyzed_tracks:
+            return None
+        try:
+            admin = PlexServer(PLEX_URL, plex_auth.admin_token())
+            section = admin.library.section(PLEX_MUSIC_SECTION)
+            songs = [s for s in (taste.song_from_plex(t.get('track'), t.get('features')) for t in analyzed_tracks)
+                     if s]
+            is_admin = os.environ.get("APP_IS_ADMIN_USER", "").lower() == "true"
+            profile = taste.from_plex(PLEX_USERNAME or APP_USER_NAME, songs, admin, section, is_admin)
+            profile.weights = taste.source_weights(DB_PATH, profile)
+            taste.save_summary(profile, os.path.dirname(DB_PATH))
+        except Exception as e:
+            logger.warning(f"Could not read this user's taste: {e}")
+            return None
+        summary = profile.summary()
+        logger.info(f"🎯 Taste of {APP_USER_NAME}: {summary['loved_songs']} loved song(s); favourites: "
+                    f"{', '.join(summary['favourite_artists'][:8]) or 'none yet'}")
+        logger.info(f"🎯 Styles: {', '.join(summary['styles'][:6]) or '-'}; moods: {', '.join(summary['moods'][:6]) or '-'}")
+        logger.info(f"🎯 Artists to discover (Plex lists them with the favourites): "
+                    f"{', '.join(summary['similar_artists'][:8]) or 'none'}")
+        logger.info(f"🎯 Weight of each source, from how its earlier picks went: {summary['source_weights']}")
+        return profile
+
+    def taste_ready(self) -> bool:
+        """Enough is known of this user's taste to pick songs by it."""
+        profile = getattr(self, 'taste', None)
+        return profile is not None and profile.ready()
+
+    def _picked(self) -> Counter:
+        """Songs downloaded per artist (taste.artist_key) this cycle, from
+        every source, so no artist takes more than its share of the picks."""
+        if getattr(self, 'picked_artists', None) is None:
+            self.picked_artists = Counter()
+        return self.picked_artists
+
+    def rank_for_taste(self, tracks, source, limit):
+        """Chart or playlist songs, only those that fit this user's taste (by an
+        artist they like, or one Plex lists with their favourites), best first.
+        Unchanged while the taste isn't known well enough."""
+        import taste
+        if not self.taste_ready():
+            return tracks
+        ranked = taste.rank(self.taste, taste.chart_candidates(tracks, source), limit, self._picked())
+        logger.info(f"🎯 {len(ranked)} of {len(tracks)} {source.replace('_', ' ')} song(s) fit this user's taste")
+        return ranked
+
+    def download_taste_picks(self, limit=None):
+        """Songs picked from this user's taste, ranked together (taste.rank):
+        songs like their loved songs (Last.fm, Deezer) and the most popular
+        songs of the artists Plex lists with their favourites. The best `limit`
+        that download go in "You Might Like". Returns how many downloaded."""
+        import taste
+        limit = limit or TASTE_PICKS
+        p = self.taste
+        candidates = taste.similar_song_candidates(
+            p, lambda artist, title: self.get_similar_tracks_from_lastfm(artist, title, limit=10))
+        candidates += taste.artist_candidates(p, taste.deezer_top_tracks)
+        # Twice as many as wanted, so songs that fail to download or are found
+        # in the library after all leave no gap; past 60 % of the places, a
+        # source's songs wait behind the others', so each gets picks to be
+        # judged by.
+        picks = taste.rank(p, candidates, 2 * limit, self._picked(), per_source=-(-limit * 3 // 5))
+        logger.info(f"🎯 {len(picks)} song(s) picked from {len(candidates)} candidate(s) for {APP_USER_NAME}:")
+        for pick in picks:
+            logger.info(f"   {pick['confidence']:.2f}  {pick['artist']} - {pick['title']}  ({pick['reason']})")
+        if not picks:
+            return 0
+        return len(self.download_recommended_music(picks, preference_confidence=0.0, playlist='similar',
+                                                   limit=len(picks), max_downloads=limit) or [])
+
     def download_recommended_music(self, recommendations, preference_confidence=1.0,  target_dir=None,
-                                   playlist=None, limit=10):
+                                   playlist=None, limit=10, max_downloads=None):
         """Download recommended music using a smart fallback pipeline with metadata verification.
 
         For each recommended artist:
@@ -3246,6 +3287,11 @@ class MusicAIAnalyzer:
             preference_confidence: Confidence level in user's music preference (0-1.0)
             playlist: 'trending' or 'similar': the cycle playlist (CYCLE_PLAYLISTS)
                 the downloads go in at the end of the cycle; None for none
+            limit: recommendations tried, in order
+            max_downloads: stop once this many downloaded (None: no stop)
+
+        A recommendation with a taste.py `source` is written down as a pick, so
+        how the user takes to it weighs that source's next picks.
         """
         if not recommendations:
             logger.info("❌ No recommendations to download")
@@ -3276,7 +3322,10 @@ class MusicAIAnalyzer:
         except Exception:
             user_index = 0
 
+        import taste
         for idx, rec in enumerate(recommendations[:limit]):
+            if max_downloads and len(results) >= max_downloads:
+                break
             artist = rec.get('artist', 'Unknown')
             title = rec.get('title', '')
             album = rec.get('album')
@@ -3346,6 +3395,9 @@ class MusicAIAnalyzer:
             if on_probation:
                 import library_state
                 library_state.mark(file_path, library_state.PROBATION)
+            if rec.get('source') in taste.SOURCES:
+                taste.record_pick(DB_PATH, artist, title, rec['source'], confidence, reason)
+                self._picked()[taste.artist_key(artist)] += 1
 
             results.append({
                 'artist': artist,
@@ -4965,7 +5017,8 @@ def _stage_album_completion(analyzer, cycle_stats: dict) -> None:
     for album in albums:
         recommendations = [
             {'artist': album['artist'], 'title': title, 'album': album['album'],
-             'reason': f"Completing album: {album['album']}", 'confidence': 1.0, 'type': 'song'}
+             'reason': f"Completing album: {album['album']}", 'confidence': 1.0, 'type': 'song',
+             'source': 'album_completion'}
             for title in album['missing']]
         downloaded += len(analyzer.download_recommended_music(recommendations, preference_confidence=1.0,
                                                               playlist='similar', limit=len(recommendations)) or [])
@@ -5031,14 +5084,18 @@ def _stage_trending(analyzer, cycle_stats: dict) -> None:
 
     all_trending = analyzer.without_disliked_artists(all_trending, "Trending")
     _push_cycle_status("Trending", "Downloading trending music recommendations")
-    to_download = all_trending[:500]
-    logger.info(f"\n📥 Downloading {len(to_download)} total trending songs from all sources...")
-    for track in to_download:
-        track['confidence'] = max(0.75, track.get('confidence', 0.75))
+    if analyzer.taste_ready():
+        # Only the chart songs that fit this user, best first (taste.py).
+        to_download = analyzer.rank_for_taste(all_trending, 'trending', 3 * CHART_PICKS)
+    else:
+        to_download = [dict(t, source='trending', confidence=max(0.75, t.get('confidence', 0.75)))
+                       for t in all_trending[:500]]
+    logger.info(f"\n📥 Downloading up to {CHART_PICKS} of {len(to_download)} trending song(s)...")
     # download_recommended_music also collects them for "Trending Now for You"
     # from whatever it manages to download.
-    analyzer.download_recommended_music(to_download, preference_confidence=0.75, playlist='trending')
-    cycle_stats['downloads']['trending'] = len(to_download)
+    downloaded = analyzer.download_recommended_music(to_download, preference_confidence=0.75, playlist='trending',
+                                                     limit=len(to_download), max_downloads=CHART_PICKS)
+    cycle_stats['downloads']['trending'] = len(downloaded or [])
     update_trending_lock()
 
 
@@ -5073,18 +5130,21 @@ def _stage_popular_playlists(analyzer, cycle_stats: dict) -> None:
                     'album': track.get('album', 'Unknown'),
                     'confidence': 0.90,
                     'reason': f'From popular playlist: {playlist_name}',
-                    'source': 'popular_playlists',
+                    'source': 'popular_playlist',
                     'type': 'song',
                 })
         recommendations = analyzer.without_disliked_artists(recommendations, "Popular playlists")
+        if analyzer.taste_ready():
+            recommendations = analyzer.rank_for_taste(recommendations, 'popular_playlist', 3 * CHART_PICKS)
         if not recommendations:
-            logger.warning("No tracks extracted from popular playlists")
+            logger.info("No popular playlist song to download for this user")
             return
         _push_cycle_status("User playlists", "Downloading popular playlist tracks")
-        logger.info(f"📥 Downloading {len(recommendations)} tracks from popular playlists...")
-        analyzer.download_recommended_music(recommendations, preference_confidence=0.85, target_dir=ALBUM_DIR,
-                                            playlist='trending')
-        cycle_stats['downloads']['user_playlists'] = len(recommendations)
+        logger.info(f"📥 Downloading up to {CHART_PICKS} of {len(recommendations)} popular playlist song(s)...")
+        downloaded = analyzer.download_recommended_music(recommendations, preference_confidence=0.85,
+                                                         target_dir=ALBUM_DIR, playlist='trending',
+                                                         limit=len(recommendations), max_downloads=CHART_PICKS)
+        cycle_stats['downloads']['user_playlists'] = len(downloaded or [])
     except Exception as exc:
         _record_stage_error(cycle_stats, 'list', f"Popular playlists error: {str(exc)[:100]}")
 
@@ -5129,6 +5189,17 @@ def _stage_top_artists(analyzer, cycle_stats: dict, user_index: int) -> None:
 
 
 def _stage_similar_tracks(analyzer, cycle_stats: dict) -> None:
+    """Songs picked from the user's taste (taste.py) for "You Might Like";
+    while their taste isn't known well enough, songs similar to the ones
+    they played last (Last.FM)."""
+    if analyzer.taste_ready():
+        _log_banner("🎯 PICKED FROM YOUR TASTE 🎯")
+        try:
+            _push_cycle_status("Your taste", "Picking songs that fit this listener")
+            cycle_stats['downloads']['similar_tracks'] = analyzer.download_taste_picks()
+        except Exception as exc:
+            _record_stage_error(cycle_stats, 'list', f"Taste picks error: {str(exc)[:100]}")
+        return
     _log_banner("🎵 SIMILAR TRACKS DISCOVERY (Last.FM) 🎵")
     if not LAST_FM_API_KEY:
         logger.debug("Last.FM API key not configured, skipping similar tracks discovery")
@@ -5284,6 +5355,8 @@ def _run_cycle(analyzer, run_once: bool):
     analyzer.check_api_availability()
 
     analyzer.start_cycle_playlists()
+    analyzer.taste = analyzer.build_taste(analyzed_tracks)
+    analyzer.picked_artists = Counter()
     try:
         _push_cycle_status("Analysis", "Inspecting library and low-rated content")
         _stage_album_completion(analyzer, cycle_stats)

@@ -37,10 +37,29 @@ in `.env` (see `.env.example`); `docker-compose.example.yml` passes them in.
 | `TOP_ARTIST_LIMIT` | `5` | Top artists per user followed in Lidarr. |
 | `ENABLE_TIKTOK_TRENDING` | `false` | Include TikTok in trending discovery. |
 | `TRENDING_PLAYLIST_NAME` | `Trending Now for You` | Each user's playlist of their last cycle's trending songs (charts, popular playlists). A playlist titled "Trending Now" is renamed to it. |
-| `SIMILAR_PLAYLIST_NAME` | `You Might Like` | Each user's playlist of their last cycle's songs picked from their taste (similar tracks, album completion). Both are removed when the cycle is skipped or brings nothing for them. |
+| `SIMILAR_PLAYLIST_NAME` | `You Might Like` | Each user's playlist of their last cycle's songs picked from their taste (songs like their loved ones, similar artists' top songs, album completion). Both are removed when the cycle is skipped or brings nothing for them. |
 | `ALBUM_COMPLETION_SCORE` / `ALBUM_COMPLETION_MIN_LOVED` | `0.55` / `3` | Album completion only for albums a user clearly loves: this many of its songs scoring this much (or rated 4★+). |
 | `ALBUM_COMPLETION_MAX_ALBUMS` / `ALBUM_COMPLETION_MAX_TRACKS` | `2` / `30` | Albums completed per cycle; an album missing more songs than this is left alone. |
-| `LASTFM_SIMILARITY_THRESHOLD` | `0.85` | Minimum Last.fm match for similar tracks. |
+| `LASTFM_SIMILARITY_THRESHOLD` | `0.85` | Minimum Last.fm match for similar tracks (only while a user's taste isn't known yet). |
+
+## Taste
+
+See [taste.md](taste.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `TASTE_PICKS` | `20` | Songs a cycle downloads for "You Might Like" from the user's taste. |
+| `CHART_PICKS` | `10` | At most this many songs each from the trending charts and the popular playlists; with a known taste, only those that fit. |
+| `TASTE_HALF_LIFE_DAYS` | `90` | A play counts half as much after this many days. |
+| `TASTE_HISTORY_DAYS` | `365` | Days of Plex's play history read. |
+| `TASTE_MIN_LOVED` | `10` | Loved songs a user needs before songs are picked by their taste (and before they get Picked for You). |
+| `TASTE_SEEDS` | `25` | Loved songs the picks start from. |
+| `TASTE_MIN_FIT` | `0.35` | Score (0–1) a candidate needs to be downloaded. |
+| `TASTE_PICKS_PER_ARTIST` | `2` | Songs per artist a cycle picks at most, across all sources. |
+| `ENABLE_FOR_YOU_PLAYLIST` | `true` | Each user's daily Picked for You playlist. |
+| `FOR_YOU_PLAYLIST_NAME` | `Picked for You` | Its name. |
+| `FOR_YOU_SIZE` | `50` | Songs in it. |
+| `SONIC_MAX_DISTANCE` | `0.3` | How far (Plex's sonic distance) a song may sound from a loved one to be picked for it. |
 
 ## Library
 

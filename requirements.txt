@@ -22,7 +22,6 @@ discogs-client>=1.1.1
 soundcloud-downloader>=0.1.0
 pysocks>=1.7.1
 deemix>=3.6.6
-billboard-py>=0.5.5
 discord.py>=2.3.0
 shazamio>=0.6.0
 spotifyscraper

@@ -17,7 +17,9 @@ Once a day it:
    Plex has split in two. It runs after step 2 so albums whose tags were just
    repaired are merged the same day.
 5. Deletes every song in the admin's "Delete" playlist (delete_playlist.py).
-6. Writes lyrics files for songs that have none (lyrics_files.py).
+6. Refills each user's "Picked for You" playlist: library songs they haven't
+   heard that sound like the ones they love (taste.py).
+7. Writes lyrics files for songs that have none (lyrics_files.py).
 
 Before that work it notes every user's playlists, and on every poll it puts
 songs moved since back in their playlists (playlist_keeper.py).
@@ -56,6 +58,7 @@ LIBRARY_KEY = '__library__'
 MERGE_KEY = '__album_merge__'
 DELETE_KEY = '__delete_playlist__'
 LYRICS_KEY = '__lyrics__'
+FOR_YOU_KEY = '__picked_for_you__'
 
 
 def interval_seconds() -> int:
@@ -260,11 +263,47 @@ def lyrics_if_due(admin_plex, plex_section: str, interval: int) -> None:
         logger.warning(f"Could not have Plex show the new lyrics: {exc}")
 
 
+def picked_for_you_if_due(admin_plex, mapping, plex_section: str, interval: int) -> None:
+    """Once per interval: every user's "Picked for You" playlist, made on their
+    own account from their own plays and ratings (taste.refresh_for_you)."""
+    import taste
+    if not taste.for_you_enabled():
+        return
+    now = datetime.now(timezone.utc)
+    if not is_due(FOR_YOU_KEY, now, interval):
+        return
+    names = users.plex_usernames(mapping)
+    try:
+        for username in names:
+            server = _server_for(admin_plex, names, username)
+            if server is None:
+                logger.info(f"🎯 No Plex connection as '{username}': their '{taste.for_you_playlist_name()}' waits")
+                continue
+            try:
+                taste.refresh_for_you(admin_plex, server, plex_section, username, is_admin=username == names[0])
+            except Exception as exc:
+                logger.warning(f"'{taste.for_you_playlist_name()}' failed for '{username}': {exc}")
+    finally:
+        write_last_run(FOR_YOU_KEY, now)
+
+
 def _work_due(mapping, interval: int) -> bool:
     """Whether a job that moves songs runs in this pass."""
     now = datetime.now(timezone.utc)
     keys = [LIBRARY_KEY, MERGE_KEY] + ([] if dry_run() else users.plex_usernames(mapping))
     return any(is_due(key, now, interval) for key in keys)
+
+
+def _server_for(admin_plex, names: List[str], username: str):
+    """A user's own Plex connection: the admin's for the mapping's first user,
+    the Home user's otherwise; None when Plex won't switch to them."""
+    if not names or username == names[0]:
+        return admin_plex
+    try:
+        return admin_plex.switchUser(username)
+    except Exception as exc:
+        logger.debug(f"switchUser('{username}') failed: {exc}")
+        return None
 
 
 def keep_playlists(admin_plex, mapping, plex_section: str, interval: int) -> None:
@@ -274,13 +313,7 @@ def keep_playlists(admin_plex, mapping, plex_section: str, interval: int) -> Non
     names = users.plex_usernames(mapping)
 
     def server_for(username: str):
-        if not names or username == names[0]:
-            return admin_plex                       # the admin: the mapping's first user
-        try:
-            return admin_plex.switchUser(username)
-        except Exception as exc:
-            logger.debug(f"switchUser('{username}') failed: {exc}")
-            return None
+        return _server_for(admin_plex, names, username)
 
     playlist_keeper.settle(server_for, admin_plex.library.section(plex_section))
     if _work_due(mapping, interval):
@@ -316,6 +349,10 @@ def run_pass(admin_plex, mapping, plex_section: str, interval: int) -> None:
     finally:
         manual_fix.send_pending_notifications(state)
         manual_fix.save_state(state)
+    try:
+        picked_for_you_if_due(admin_plex, mapping, plex_section, interval)
+    except Exception as exc:
+        logger.warning(f"Picked for You pass failed: {exc}")
     # Last: the lyrics lookups take a while and hold nothing above back.
     try:
         lyrics_if_due(admin_plex, plex_section, interval)

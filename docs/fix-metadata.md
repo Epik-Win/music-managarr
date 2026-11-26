@@ -24,7 +24,10 @@ cycle may run only once a month. Each run:
    there (it leaves the user's Fix Metadata, and they never get a Manual Fix);
 4. reconciles albums with Lidarr: folds second copies of an album into
    Lidarr's version, removes duplicate songs and merges albums Plex split in
-   two (`album_artist_merger.lidarr_reconcile`).
+   two (`album_artist_merger.lidarr_reconcile`);
+5. refills every user's **Picked for You** playlist, on their own account:
+   library songs they haven't heard that sound like the ones they love
+   ([taste.md](taste.md)).
 
 Each job keeps its own last-run time in `DATA_DIR/fix_metadata_last_run_<key>.json`,
 so a restart only runs what is due. `METADATA_REPAIR_DRY_RUN=true` (the

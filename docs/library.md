@@ -37,12 +37,11 @@ $DATA_DIR/library
 
 ## A song's life
 
-**Downloaded.** A song MusicAI picks on its own (trending, similar tracks,
-album completion) arrives **on probation**. A song someone asked for (a
-Discord request, live or queued; an Exportify import) and a song from
-Spotify's popular editorial playlists arrive as permanent members of the
-library. Lidarr's
-own downloads are Lidarr's and permanent.
+**Downloaded.** A song MusicAI picks on its own (trending, songs picked from
+the user's taste, album completion) arrives **on probation**. A song someone
+asked for (a Discord request, live or queued; an Exportify import) and a song
+from Spotify's popular editorial playlists arrive as permanent members of the
+library. Lidarr's own downloads are Lidarr's and permanent.
 
 **Scored.** Each user's cycle scores every track for that user
 (`app.calculate_engagement_score`, 0–1):
@@ -57,7 +56,9 @@ own downloads are Lidarr's and permanent.
 A song nobody has played or rated scores 0. Played once without skips is
 about 0.3 (0.4 within the week); a high rating adds up to 0.2. A song's
 score is the **best of all users'**: a song one person loves stays even if
-nobody else plays it.
+nobody else plays it. This score decides what stays; which songs are picked
+for a user comes from their taste ([taste.md](taste.md)), where recent plays
+count most.
 
 **Reviewed, once per full pass.** A pass is one download cycle for every
 user in turn (`SCAN_INTERVAL`). When the last user's cycle is done, the

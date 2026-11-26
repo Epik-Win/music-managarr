@@ -23,7 +23,9 @@ The channel shows **only the download-cycle status**: one message, kept
 pinned at the bottom, listing every user as waiting, running (with the
 stage), completed or skipped for inactivity. It turns green once everyone
 is done. When Deezer's login has expired, it says downloads are paused.
-On startup the bot removes everything else from the channel.
+A cycle's errors (a chart that couldn't be read) show at its foot for five
+minutes each; the message is edited only when one comes or goes. On startup
+the bot removes everything else from the channel.
 
 Everything else is private:
 

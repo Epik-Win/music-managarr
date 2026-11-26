@@ -12,16 +12,25 @@ going through a Mullvad VPN tunnel inside the container.
 
 ## Features
 
-- **Per-user taste.** Every Plex Home user is scored from their own plays,
-  skips, ratings and recency. Automatic downloads start for a user once their
-  taste is clear enough (`PREFERENCE_CONFIDENCE_THRESHOLD`).
+- **Per-user taste, read the way Plex reads it.** Every Plex Home user's
+  taste comes from their own play history (recent plays counting most),
+  ratings and skips, and from Plex's own music data: the similar artists,
+  styles and moods of their favourites, and Plex's sonic analysis. See
+  [docs/taste.md](docs/taste.md).
 - **New music that fits.** Each cycle completes albums in the library,
-  pulls in trending music (Billboard by genre, TikTok, Spotify), fulfils
-  queued requests, follows each user's top artists in Lidarr, and finds songs
-  similar to what they play. Every user gets two playlists of their last
-  cycle's new songs: "Trending Now for You" (the trending songs) and "You
-  Might Like" (songs picked from their taste: similar tracks, albums they
-  love). A playlist is removed when that cycle brought nothing for it.
+  fulfils queued requests, follows each user's top artists in Lidarr, and
+  downloads songs picked for that user: songs like the ones they love, the
+  most popular songs of the artists Plex lists with their favourites, and
+  only those trending (Billboard by genre, TikTok, Spotify) or popular
+  playlist songs that fit them. How the user takes to each kind of pick
+  (loved, played, never played, deleted) weighs its next picks. Every user
+  gets two playlists of their last cycle's new songs: "Trending Now for You"
+  (the chart and playlist songs) and "You Might Like" (the songs picked from
+  their taste, albums they love). A playlist is removed when that cycle
+  brought nothing for it.
+- **Picked for You.** Every day each user gets library songs they haven't
+  heard yet that sound like the ones they love (Plex's sonic analysis), in a
+  playlist on their own account.
 - **A library that cleans itself.** Songs MusicAI picks on its own start on
   probation. A song someone loves graduates; one nobody plays by the end of
   the next cycle is deleted; when the disk runs low, the least-liked songs go
@@ -63,7 +72,7 @@ going through a Mullvad VPN tunnel inside the container.
 | Cycle worker | `app.py cycle-once` | One short-lived process per user, in turn: a full analysis and download cycle with that user's token and database. |
 | Library review | `library_review.py` | After every user's cycle of a pass: graduation, end of probation, disk space. |
 | Discord bot | `discord_bot.py` | Requests, slash commands, the cycle-status message, admin notices. |
-| Metadata daemon | `fix_metadata_daemon.py` | Daily: the admin's Delete playlist, Fix Metadata playlists, library repair, Manual Fix, album reconcile, lyrics files; moved songs back in their playlists. |
+| Metadata daemon | `fix_metadata_daemon.py` | Daily: the admin's Delete playlist, Fix Metadata playlists, library repair, Manual Fix, album reconcile, Picked for You, lyrics files; moved songs back in their playlists. |
 | One-star watcher | `one_star_watcher.py` | While switched on, deletes songs the admin rates exactly one star. |
 | ARL page | `arl_server.py` | Renews the Deezer login; listens only while it has expired. |
 
@@ -73,15 +82,19 @@ every `SCAN_INTERVAL`. The schedule is kept on disk
 nor starts a new pass; an interrupted pass resumes with the users that had
 not finished. A user's cycle:
 
-1. **Analyse** — score every track for this user.
+1. **Analyse** — score every track for this user, and read their taste
+   ([docs/taste.md](docs/taste.md)).
 2. **Skip inactive users** — no play in `USER_ACTIVITY_WINDOW_DAYS` days
    (from Plex's last-played dates, not old counts or ratings) and the cycle
    is skipped. Plex being unreachable is not a skip: the worker exits so the
    manager retries.
 3. **Album completion**, **trending**, **queued Discord requests**,
    **popular Spotify playlists**, **top artists** (synced to Lidarr), and
-   **similar tracks** (Last.fm, Deezer, Spotify). Trending charts and popular
-   playlists leave out artists the user clearly doesn't like: one of their
+   **songs picked from their taste** (similar to their loved songs on
+   Last.fm and Deezer, and top songs of the artists Plex lists with their
+   favourites). Once a user's taste is known, trending charts and popular
+   playlists keep only the songs that fit it, best first. They always leave
+   out artists the user clearly doesn't like: one of their
    songs rated 1★ or less and none 3★ or more, or five or more of their songs
    in the library for a month and none ever played. Album completion is for
    albums the user clearly loves — `ALBUM_COMPLETION_MIN_LOVED` (3) songs
@@ -209,6 +222,7 @@ python3 album_artist_merger.py [--pass lidarr|songs|plex|…] [--artist NAME] [-
 |---|---|
 | `entrypoint.py` | The manager: configuration, Plex tokens, schedule, child processes. |
 | `app.py` | `MusicAIAnalyzer` (scoring, discovery sources, Lidarr top artists) and the cycle (`_run_cycle`, `_stage_*`). |
+| `taste.py` | Each user's taste from Plex's history, metadata and sonic analysis; which songs fit them; Picked for You. |
 | `library_state.py`, `library_review.py` | Probation and soon-to-go state; what stays and what goes. |
 | `downloader.py`, `downloader_manager.py` | The download pipeline, `LidarrClient`, the VPN; the shared download lock and Deezer login state. |
 | `metadata_proxy.py`, `library_owner.py` | Metadata lookups outside the VPN (downloads stay in it); library files handed to the library's owner. |
