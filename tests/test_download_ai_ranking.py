@@ -321,7 +321,11 @@ class TestDownloadAIRanking:
         }
         downloader.get_metadata_from_sources = lambda *args, **kwargs: None
         downloader.check_download_tools = lambda: {'deemix': False, 'soundcloud': False, 'yt-dlp': False}
-        downloader._get_lidarr_client = lambda user_index=None: None
+        asked_lidarr = []
+        downloader._get_lidarr_client = lambda user_index=None: asked_lidarr.append(user_index)
+        # SoundCloud is always tried; offline here, it finds nothing.
+        tried = []
+        downloader._try_tool_download = lambda tool, *args: tried.append(tool)
 
         result = downloader.download_track(
             artist='The Weeknd',
@@ -334,6 +338,7 @@ class TestDownloadAIRanking:
 
         assert result['success'] is False
         assert result['download_tool'] is None
+        assert asked_lidarr == [] and tried == ['soundcloud']
 
     def test_organization_prefers_request_context_artist_for_cover_variant(self):
         downloader = Downloader.__new__(Downloader)

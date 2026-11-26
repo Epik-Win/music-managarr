@@ -180,7 +180,7 @@ def test_switching_deletion_back_on_does_not_delete_songs_rated_while_it_was_off
 
 def test_deletion_switched_on_outside_discord_counts_from_the_first_pass(tmp_path, monkeypatch):
     monkeypatch.setenv('DATA_DIR', str(tmp_path))
-    monkeypatch.delenv('ONE_STAR_DELETE', raising=False)
+    monkeypatch.setenv('ONE_STAR_DELETE', 'true')
     monkeypatch.setattr(w.time, 'time', lambda: SWITCHED_ON)
     assert w.enabled() and runtime_settings.get_value(w.SINCE_SETTING) is None
     assert w.deleting_since() == SWITCHED_ON

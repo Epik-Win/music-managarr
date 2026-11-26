@@ -2597,59 +2597,53 @@ async def _handle_request(message, private, requested: bool = False):
                                     else:
                                         logger.info(f"📚 Using library '{music_lib_pl.title}' for playlist creation")
 
-                                        # ── Search for each downloaded track in Plex ──
-                                        # Uses fuzzy artist matching (case-insensitive, partial)
-                                        # so minor tagging differences don't drop tracks.
-                                        from difflib import SequenceMatcher
+                                        # The playlist is made from the downloaded files, in
+                                        # order, once Plex has scanned them; songs Plex shows
+                                        # later are added then (playlist_keeper). A song the
+                                        # library already had comes without a file: found by name.
+                                        import playlist_keeper
+                                        from paths import host_to_container
 
-                                        def _artist_match(plex_track, want_artist: str) -> bool:
-                                            candidates = [
-                                                plex_track.grandparentTitle or '',
-                                                getattr(plex_track, 'originalTitle', '') or '',
-                                            ]
+                                        def _by_name(want_artist: str, want_title: str):
+                                            from difflib import SequenceMatcher
                                             want = want_artist.lower().strip()
-                                            for c in candidates:
-                                                c = c.lower().strip()
-                                                if not c:
-                                                    continue
-                                                if c == want:
-                                                    return True
-                                                if SequenceMatcher(None, c, want).ratio() >= 0.85:
-                                                    return True
-                                            return False
+                                            for pt in music_lib_pl.searchTracks(title=want_title):
+                                                for c in (pt.grandparentTitle or '', getattr(pt, 'originalTitle', '') or ''):
+                                                    c = c.lower().strip()
+                                                    if c and (c == want or SequenceMatcher(None, c, want).ratio() >= 0.85):
+                                                        return host_to_container(pt.media[0].parts[0].file)
+                                            return None
 
-                                        plex_tracks = []
-                                        for t_info in downloaded_tracks:
-                                            artist_name = t_info['artist']
-                                            title_name  = t_info['title']
-                                            try:
-                                                results = music_lib_pl.searchTracks(title=title_name)
-                                                match = None
-                                                for pt in results:
-                                                    if _artist_match(pt, artist_name):
-                                                        match = pt
-                                                        break
-                                                if match:
-                                                    plex_tracks.append(match)
-                                                    logger.debug(f"  ✓ Plex track: {match.grandparentTitle} – {match.title}")
+                                        def _make_playlist():
+                                            files = []
+                                            for t_info in downloaded_tracks:
+                                                found = t_info.get('file')
+                                                if not found:
+                                                    try:
+                                                        found = _by_name(t_info['artist'], t_info['title'])
+                                                    except Exception as _te:
+                                                        logger.warning(f"  Error searching Plex for '{t_info['str']}': {_te}")
+                                                if found:
+                                                    files.append(found)
                                                 else:
-                                                    logger.warning(f"  ✗ Not found in Plex: {artist_name} – {title_name}")
-                                            except Exception as _te:
-                                                logger.warning(f"  Error searching Plex for '{artist_name} – {title_name}': {_te}")
+                                                    logger.warning(f"  ✗ Not found in Plex: {t_info['str']}")
+                                            # Made on the admin's server: the mapping's first user.
+                                            owner = next(iter(DISCORD_TO_PLEX_MAPPING.values()), '')
+                                            return playlist_keeper.make_playlist(
+                                                plex_pl, music_lib_pl, playlist_name, files, owner)
 
-                                        if plex_tracks:
-                                            try:
-                                                # createPlaylist on the admin server scoped
-                                                # to the correct section works for all user types
-                                                playlist_obj = plex_pl.createPlaylist(playlist_name, items=plex_tracks)
+                                        try:
+                                            playlist_obj = await asyncio.to_thread(_make_playlist)
+                                            if playlist_obj is not None:
                                                 logger.info(
                                                     f"✅ Created Plex playlist '{playlist_name}' "
-                                                    f"with {len(plex_tracks)}/{len(downloaded_tracks)} tracks"
+                                                    f"with {len(playlist_obj.items())}/{len(downloaded_tracks)} tracks"
                                                 )
-                                            except Exception as _pe:
-                                                logger.error(f"❌ Failed to create Plex playlist '{playlist_name}': {_pe}")
-                                        else:
-                                            logger.warning(f"No tracks found in Plex for playlist '{playlist_name}' — library scan may still be in progress")
+                                            else:
+                                                logger.warning(f"No tracks in Plex yet for playlist '{playlist_name}'; "
+                                                               f"it is made once Plex shows them")
+                                        except Exception as _pe:
+                                            logger.error(f"❌ Failed to create Plex playlist '{playlist_name}': {_pe}")
 
                             except Exception as e:
                                 logger.error(f"❌ Error creating Plex playlist for user {plex_user}: {e}", exc_info=True)
@@ -3244,11 +3238,11 @@ async def one_star_delete(interaction: discord.Interaction, state: Optional[app_
         turn_on = state.value == 'on'
         if not turn_on:
             since = None
-        elif since is None or not runtime_settings.get_bool('ONE_STAR_DELETE', True):
+        elif since is None or not runtime_settings.one_star_delete():
             since = time.time()
         runtime_settings.update({'ONE_STAR_DELETE': turn_on, 'ONE_STAR_DELETE_SINCE': since})
         logger.info(f"⭐ One-star deletion turned {state.value} by {interaction.user.name}")
-    if runtime_settings.get_bool('ONE_STAR_DELETE', True):
+    if runtime_settings.one_star_delete():
         counted = f"since <t:{int(since)}:f>" if since else "from now on"
         text = (f"⭐ One-star deletion is **on**: a song you rate exactly one star in Plex {counted} is deleted within a "
                 "minute, for everyone. Songs you rated one star before that are kept; to delete one, clear its "

@@ -85,7 +85,10 @@ soundtrack; without either, one far more popular than every other is only a
 likely original. The requester chooses, the official song first and covers
 below it. Where nobody answers or can be asked, the official song is taken
 unless it is only a likely one. In every other list of results, covers come
-last unless a cover is asked for.
+last unless a cover is asked for. A video naming a soundtrack ("Example OST 3 -
+Track 18 - Nocturne") whose uploader has no release of the song, and whose
+length is that soundtrack recording's (within 3 s), is a fan's upload of it:
+the soundtrack's recording is downloaded instead, with no question.
 
 **Asking the requester.** For a request posted in Discord and downloaded
 right away, the only result of a source that has the song's artist, title and

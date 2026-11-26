@@ -447,6 +447,37 @@ def test_music_video_cut_is_replaced_with_the_release(monkeypatch):
     assert written[0] == {'artist': 'Tiny Meat Gang', 'album': 'Walk Man', 'title': 'Walk Man'}
 
 
+def test_a_file_holding_several_parts_of_a_piece_keeps_its_audio(monkeypatch):
+    # A 371 s upload of a three-part piece: the services hear Pt. B and Pt. A.
+    import audio_id
+    swapped = _true_audio_setup(monkeypatch, 371, {'source': 'deezer', 'id': 2, 'duration': 102.0,
+                                                   'artist': 'Example Composer', 'title': '"Dance" Pt. B_Opus1',
+                                                   'album': 'Example Film Original Soundtrack'},
+                                downloaded_len=102)
+    monkeypatch.setattr(audio_id, 'identify_by_votes', lambda fp: [
+        {'artist': 'Example Composer', 'title': '"Dance" Pt. B_Opus1', 'album': 'Example Film Original Soundtrack', 'votes': 3},
+        {'artist': 'Example Composer', 'title': '"Dance" Pt. A_Opus1', 'album': 'Example Film Original Soundtrack'}])
+    run(monkeypatch, ('Example Composer', 'Example Film Original Soundtrack', '"Dance" Pt. B_Opus1'), None)
+    assert swapped == {}
+
+
+def test_one_part_of_a_piece_is_not_another(monkeypatch):
+    import artwork
+    assert not artwork.result_matches('Example Composer', '"Dance" Pt. B_Opus1', '', ['Example Composer'],
+                                      '"Dance" Pt. C_Opus1', 'Example Film Original Soundtrack')
+    assert artwork.result_matches('Example Composer', 'Stand Tall (Pt. I)', '', ['Example Composer'],
+                                  'Stand Tall (Pt. 1)', 'Example Film Original Soundtrack')
+    assert artwork.part_labels('Part of Me') == [] and artwork.part_labels('Symphony No. 7, Op. 92') == [('no', '7'), ('op', '92')]
+
+    import requests
+    rows = [{'id': n, 'title': f'"Dance" Pt. {p}_Opus1', 'duration': d, 'rank': 1000,
+             'artist': {'name': 'Example Composer'}, 'album': {'title': 'Example Film Original Soundtrack'}}
+            for n, p, d in ((3, 'C', 85), (2, 'B', 102), (1, 'A', 215))]
+    monkeypatch.setattr(requests, 'get', lambda *a, **k: SimpleNamespace(json=lambda: {'data': rows}))
+    ref = metadata_repair._real_reference_version('Example Composer', '"Dance" Pt. B_Opus1')
+    assert (ref['id'], ref['duration']) == (2, 102.0)
+
+
 def test_audio_of_a_different_known_song_is_a_names_problem(monkeypatch):
     import audio_id
     swapped = _true_audio_setup(monkeypatch, 333, {'source': 'deezer', 'id': 1, 'duration': 300.0,

@@ -135,3 +135,10 @@ def no_reference_lookups(monkeypatch):
         fix_metadata._real_existing_album = fix_metadata._existing_album
     monkeypatch.setattr(fix_metadata, '_existing_album', lambda file_path, meta: None)
     monkeypatch.setattr(fix_metadata, '_lidarr_catalog', lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def no_lyrics_lookups(monkeypatch):
+    """Downloads look up lyrics on LRCLIB; never from a test (the lyrics
+    tests switch it back on with a fake LRCLIB)."""
+    monkeypatch.setenv('LYRICS_ENABLED', 'false')

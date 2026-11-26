@@ -133,11 +133,13 @@ def _tags(path: str) -> Tuple[str, str]:
         return os.path.splitext(os.path.basename(path))[0], "Unknown"
 
 
-def delete_song(path: str, root: str) -> None:
+def delete_song(path: str, root: str, missing_ok: bool = False) -> None:
     """Delete a song with its lyrics files; an album folder left with only
-    artwork goes too, and so does an artist folder that is then empty."""
+    artwork goes too, and so does an artist folder that is then empty.
+    With missing_ok, a song already deleted (by Lidarr) only has these cleaned up."""
     base = os.path.splitext(path)[0]
-    os.remove(path)
+    if not (missing_ok and not os.path.exists(path)):
+        os.remove(path)
     for ext in library_state.LYRICS_EXTENSIONS:
         if os.path.isfile(base + ext):
             os.remove(base + ext)

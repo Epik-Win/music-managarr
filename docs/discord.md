@@ -60,6 +60,10 @@ Everything else is private:
   answer the official song is taken when the video's own words lead to it (the
   artist it credits, or that soundtrack), else the cover. Say "cover" in your
   message to get the cover without a question.
+- **A fan's upload of a soundtrack** ("Example OST 3 - Track 18 - Nocturne"
+  from a fan's channel, the soundtrack's song at the video's length) is that
+  recording: it is downloaded as the soundtrack's, under its real artist,
+  without a question.
 - **Slash command replies** are visible only to the person who used the
   command.
 
@@ -77,9 +81,12 @@ track of a playlist; private and deleted videos of a YouTube playlist are left
 out and counted in the reply), each track goes through the download pipeline with
 the link's details as context (a "live version" or "Arabic cover" is
 honoured), Plex is refreshed, and a playlist becomes a Plex playlist of the
-same name — unless the playlist is really one album, in which case the album
-is enough. Requests are permanent members of the library; they are never on
-probation.
+same name, in the playlist's order — unless the playlist is really one album,
+in which case the album is enough. The Plex playlist is made from the
+downloaded files once Plex has scanned them (up to 3 minutes); songs Plex
+shows later are added in their places by the metadata daemon
+(`playlist_keeper.py`), and so are songs a later fix files elsewhere.
+Requests are permanent members of the library; they are never on probation.
 
 **A playlist that is an album** (`album_match.py`). A YouTube playlist named
 "Final Fantasy IV: Piano Collection", fourteen videos from a fan's channel

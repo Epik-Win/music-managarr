@@ -334,6 +334,7 @@ def _clean_title(title: str) -> str:
 
 
 TRUE_AUDIO_TOLERANCE = 5           # seconds a file may differ from the release
+_PART_WORDS = re.compile(r"\b(?:part|pt|op|opus|mvt|movement)\.?\s*(?:\d+|[ivx]+|[a-z])(?![a-z])|\bno\.\s*\d+", re.I)
 
 
 def _download_reference(ref: dict, staging: str) -> Optional[str]:
@@ -381,6 +382,18 @@ def _replace_wrong_audio(plex_track, fp, known, answers, playlist, stats, label,
         return False
     # A different known song in the audio means the names are what's wrong.
     if any(((a.get("votes") or 1) >= 2 or a.get("service") == "ISRC") and not _confirms(known, a) for a in answers):
+        return False
+    # Other parts of the same piece heard in a longer file ("Dance" Pt. A in a
+    # file named Pt. B): the file is the whole piece or a medley, not a cut of
+    # one part, and its audio stays.
+    from artwork import part_labels
+    base = lambda t: re.sub(r"\s+", " ", _PART_WORDS.sub(" ", (t or "").replace("_", " "))).strip(" -()[]")
+    parts = sorted({a.get("title", "") for a in answers if a.get("title")
+                    and part_labels(a.get("title", "")) != part_labels(known["title"])
+                    and _same_title(base(a.get("title", "")), base(known["title"]))})
+    if parts and file_len > ref["duration"] + TRUE_AUDIO_TOLERANCE:
+        logger.info(f"    the file ({file_len:.0f}s) also holds {', '.join(parts)}: the whole piece, not a cut "
+                    f"of the {ref['duration']:.0f}s recording; its audio stays")
         return False
     confirms = any(_confirms(known, a) for a in answers)
     if ref["source"] != "deezer" and not confirms and file_len > 2 * ref["duration"]:
@@ -973,6 +986,7 @@ def _get_or_create_fix_playlist(user_plex, plex_music_section: str):
             return None
         pl = user_plex.createPlaylist(FIX_PLAYLIST_NAME, items=dummy)
         pl.removeItems(dummy)
+        pl.reload()      # Plex's client keeps the items it was made with until reloaded
         logger.info(f"  Created empty '{FIX_PLAYLIST_NAME}' playlist")
         return pl
     except Exception as exc:

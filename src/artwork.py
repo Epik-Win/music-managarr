@@ -235,6 +235,22 @@ def _title_number(title: str) -> str:
     return m.group(1).casefold() if m and (m.group(1).isdigit() or len(m.group(1)) <= 4) else ""
 
 
+_PART_RE = re.compile(r"\b(part|pt|op|opus|mvt|movement)\.?\s*(\d+|[ivx]+|[a-z])(?![a-z])|\bno\.\s*(\d+)", re.I)
+_ROMAN = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10}
+
+
+def part_labels(title: str) -> List[Tuple[str, str]]:
+    """The parts a title names anywhere, brackets included ('"Dance" Pt. B_Opus1'
+    → part b, op 1; "Song (Pt. I)" and "Song (Pt. 1)" → part 1): one piece's
+    parts are different recordings."""
+    kinds = {"pt": "part", "opus": "op", "mvt": "movement"}
+    found = []
+    for kind, value, number in _PART_RE.findall((title or "").replace("_", " ")):
+        kind, value = (kinds.get(kind.lower(), kind.lower()), value.lower()) if kind else ("no", number)
+        found.append((kind, str(_ROMAN.get(value, value))))
+    return sorted(found)
+
+
 # Releases that are never a song's own recording or cover unless the tags
 # name them: "Red (Big Machine Radio Release Special)" holds a 58 s
 # "Everything Has Changed" commentary and its own cover.
@@ -256,8 +272,8 @@ def result_matches(artist: str, title: str, album: str,
                    r_artists: Iterable[str], r_title: str, r_album: str, for_cover: bool = False) -> bool:
     if not _same(title, r_title):
         return False
-    # "Big Talk" is not "Big Talk II": a part number must agree.
-    if _title_number(title) != _title_number(r_title):
+    # "Big Talk" is not "Big Talk II", nor "Dance Pt. B" "Dance Pt. C": parts must agree.
+    if _title_number(title) != _title_number(r_title) or part_labels(title) != part_labels(r_title):
         return False
     # Brackets are ignored above, so "RISE (Remix)" would pass for "RISE":
     # a version label must agree, in the title and in the album. For a cover,
@@ -498,7 +514,7 @@ def own_youtube_upload(artist: str, title: str) -> Optional[Tuple[str, float]]:
         v_title = e.get("title", "")
         if e.get("id") and e.get("duration") and _by_artist(e.get("channel") or e.get("uploader") or "", artist) \
                 and _core(_plain(title)) in _core(v_title) and variant_labels(title) == variant_labels(v_title) \
-                and _title_number(title) == _title_number(v_title) \
+                and _title_number(title) == _title_number(v_title) and part_labels(title) == part_labels(v_title) \
                 and not (_NOT_A_RECORDING.search(v_title) and not _NOT_A_RECORDING.search(title)):
             return e["id"], float(e["duration"])
     return None
@@ -675,7 +691,8 @@ def _soundcloud(artist: str, title: str, album: str, duration: Optional[float] =
             continue
         if not _same(_plain(title), _plain(e.get("title", ""))) and _core(_plain(title)) not in _core(e.get("title", "")):
             continue
-        if _title_number(title) != _title_number(e.get("title", "")) or variant_labels(title) != variant_labels(e.get("title", "")):
+        if _title_number(title) != _title_number(e.get("title", "")) or part_labels(title) != part_labels(e.get("title", "")) \
+                or variant_labels(title) != variant_labels(e.get("title", "")):
             continue
         if own_only and not _by_artist(e.get("uploader", ""), artist):
             continue

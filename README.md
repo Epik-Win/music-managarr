@@ -37,13 +37,18 @@ going through a Mullvad VPN tunnel inside the container.
   called *Fix Metadata* and it is fingerprinted (or identified by its sung
   lyrics), retagged, refiled and given cover art. A daily scan repairs the
   whole library. See [docs/fix-metadata.md](docs/fix-metadata.md).
+- **Lyrics in Plex.** Songs get a synced `.lrc` (or plain `.txt`) lyrics
+  file from LRCLIB when it has them, on download and in a daily pass.
 - **Lidarr as the librarian** — its folders, naming, upgrades and new
   releases. See [docs/lidarr.md](docs/lidarr.md).
-- **The admin's one star deletes:** a song the admin rates exactly one star
-  is deleted within a minute, without blacklisting it (a mistaken rating is
-  easy to undo by requesting the song again). The admin turns this on and off
-  with `/one_star_delete`; songs rated one star while it was off are not
-  deleted when it is switched back on.
+- **The admin's Delete playlist:** songs the admin puts in a Plex playlist
+  called *Delete* are deleted on the next daily pass, no matter what, and
+  blacklisted (requesting one again brings it back). Lidarr deletes its own
+  files and stops wanting their album. See [docs/library.md](docs/library.md).
+- **The admin's one star (off by default):** switched on with
+  `/one_star_delete`, a song the admin rates exactly one star is deleted
+  within a minute, without blacklisting it; songs rated one star while it was
+  off are not deleted when it is switched back on.
 - **No passwords.** Only the Plex admin's token is configured; each Plex Home
   user's token is derived from it, so each user's history is read as them.
 
@@ -58,8 +63,8 @@ going through a Mullvad VPN tunnel inside the container.
 | Cycle worker | `app.py cycle-once` | One short-lived process per user, in turn: a full analysis and download cycle with that user's token and database. |
 | Library review | `library_review.py` | After every user's cycle of a pass: graduation, end of probation, disk space. |
 | Discord bot | `discord_bot.py` | Requests, slash commands, the cycle-status message, admin notices. |
-| Metadata daemon | `fix_metadata_daemon.py` | Daily: Fix Metadata playlists, library repair, Manual Fix, album reconcile. |
-| One-star watcher | `one_star_watcher.py` | Deletes songs the admin rates exactly one star. |
+| Metadata daemon | `fix_metadata_daemon.py` | Daily: the admin's Delete playlist, Fix Metadata playlists, library repair, Manual Fix, album reconcile, lyrics files; moved songs back in their playlists. |
+| One-star watcher | `one_star_watcher.py` | While switched on, deletes songs the admin rates exactly one star. |
 | ARL page | `arl_server.py` | Renews the Deezer login; listens only while it has expired. |
 
 **A pass** is one cycle for every user, one after another (admin first),
@@ -209,11 +214,12 @@ python3 album_artist_merger.py [--pass lidarr|songs|plex|…] [--artist NAME] [-
 | `metadata_proxy.py`, `library_owner.py` | Metadata lookups outside the VPN (downloads stay in it); library files handed to the library's owner. |
 | `discord_bot.py`, `link_extractor.py`, `admin_notify.py` | The bot; links → tracks; private notices for the admin. |
 | `fix_metadata_daemon.py`, `fix_metadata.py`, `metadata_repair.py`, `manual_fix.py` | Daily metadata work. |
-| `audio_id.py`, `lyrics_id.py` | Fingerprinting (AcoustID, ACRCloud, audd, Shazam) and identification by lyrics. |
+| `audio_id.py`, `lyrics_id.py`, `lyrics_files.py` | Fingerprinting (AcoustID, ACRCloud, audd, Shazam), identification by lyrics, lyrics files. |
 | `artwork.py`, `text_repair.py` | Cover art; mojibake. |
 | `lidarr_catalog.py`, `album_artist_merger.py`, `song_dedup.py`, `plex_refile.py` | Lidarr's catalogue; duplicate albums and songs; albums under the wrong artist. |
-| `one_star_watcher.py` | The admin's one-star deletions. |
+| `delete_playlist.py`, `one_star_watcher.py` | The admin's Delete playlist; the admin's one-star deletions. |
 | `geo_relay.py`, `spotify_web.py`, `rate_limit.py` | Region locks; Spotify without its API; API rate limits. |
+| `playlist_keeper.py` | Songs keep their places in Plex playlists when their files move; playlist songs Plex scans late. |
 | `cycle_schedule.py`, `users.py`, `plex_auth.py`, `paths.py`, `naming.py` | Schedule, user mapping, Plex tokens, host ↔ container paths, artist-name parsing. |
 | `arl_server.py`, `cli.py` | The ARL page; maintenance commands. |
 
@@ -231,11 +237,11 @@ and `tests/conftest.py` points `DATA_DIR` at a temporary folder.
 ## Design decisions
 
 - **One library, many users.** Everyone shares the files; scores are per
-  user, and a song stays if anyone likes it. The admin's one-star deletion
-  removes the file for everyone, on purpose, for a household library.
+  user, and a song stays if anyone likes it. The admin's deletions (the
+  Delete playlist, one star) remove the file for everyone, on purpose, for a household library.
 - **Ratings never blacklist.** A star rating is too easy to give by mistake
   to make a song impossible to get back; only deletions the library review
-  decides blacklist a song.
+  decides and the admin's Delete playlist blacklist a song.
 - **State outside the library.** Probation and soon-to-go are symlinks in
   `DATA_DIR`, not separate music folders: a song never moves when its state
   changes, so Plex keeps its history and Lidarr can manage it.

@@ -1088,6 +1088,10 @@ class Downloader:
             return None
         request = f"{artist} - {title}" if artist else title
         official = found['official'][0]
+        if found.get('reupload'):
+            logger.info(f"🎬 '{request}' is an upload of {official['artist']} - {official['title']} "
+                        f"({official['album']}); filed as that recording")
+            return self._deezer_choice(official, fields)
         logger.info(f"🎤 '{request}' is a cover; the {'' if found['sure'] else 'likely '}official song: "
                     f"{official['artist']} - {official['title']} ({official['album']})")
 
@@ -1113,8 +1117,13 @@ class Downloader:
                     return {'context': f"{request_context}; linked_video=first"}
         if taken is None:
             return None
-        context = [f"source={fields.get('source') or 'request'}", f"album={taken['album']}", f"deezer_track={taken['id']}"]
-        return {'artist': taken['artist'], 'title': taken['title'], 'album': taken['album'],
+        return self._deezer_choice(taken, fields)
+
+    @staticmethod
+    def _deezer_choice(track: Dict[str, Any], fields: Dict[str, str]) -> Dict[str, Any]:
+        """A Deezer track to download in place of the request."""
+        context = [f"source={fields.get('source') or 'request'}", f"album={track['album']}", f"deezer_track={track['id']}"]
+        return {'artist': track['artist'], 'title': track['title'], 'album': track['album'],
                 'context': '; '.join(part.replace('; ', ', ') for part in context)}
 
     def _should_continue_with_ai(
@@ -3890,6 +3899,13 @@ class Downloader:
                 request_context, request_context_metadata,
             )
             self._save_cover_art(downloaded_file, result['metadata'].get('cover_url'))
+            try:
+                import lyrics_files
+                if lyrics_files.enabled():
+                    # No record kept here: a song LRCLIB lacks is asked again by the daily pass.
+                    lyrics_files.fetch_for(downloaded_file, state={})
+            except Exception as exc:
+                logger.debug(f"Lyrics lookup failed for {downloaded_file}: {exc}")
 
             result['success'] = True
             result['file_path'] = downloaded_file

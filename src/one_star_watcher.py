@@ -21,7 +21,7 @@ token; other Home users' ratings are invisible through it.
 
 The admin turns it on and off with /one_star_delete in Discord
 (runtime_settings ONE_STAR_DELETE, whose default is the environment
-variable); it is checked before every pass, and while it is off one-star
+variable, else off); it is checked before every pass, and while it is off one-star
 ratings are left alone.
 
 Only ratings given while deletion is on count. The time it was switched on
@@ -86,7 +86,7 @@ def remaining_copy(file_paths: List[str]):
 
 def enabled() -> bool:
     import runtime_settings
-    return runtime_settings.get_bool('ONE_STAR_DELETE', True)
+    return runtime_settings.one_star_delete()
 
 
 def deleting_since() -> float:

@@ -9,6 +9,10 @@ import json
 import os
 from typing import Any
 
+# The admin's one-star deletion is off unless the environment or the admin
+# switches it on (the admin's Delete playlist is the way to delete songs).
+ONE_STAR_DELETE_DEFAULT = False
+
 _TRUE = ('1', 'true', 'yes', 'on')
 _FALSE = ('0', 'false', 'no', 'off')
 
@@ -57,6 +61,10 @@ def update(values: dict) -> None:
     with open(tmp, 'w') as fh:
         json.dump(data, fh, indent=1, sort_keys=True)
     os.replace(tmp, _path())
+
+
+def one_star_delete() -> bool:
+    return get_bool('ONE_STAR_DELETE', ONE_STAR_DELETE_DEFAULT)
 
 
 def set_value(name: str, value: Any) -> None:

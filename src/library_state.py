@@ -1,6 +1,6 @@
 """Where each song in the library stands, kept as symlinks Plex never sees.
 
-Every song lives in albums/, the one library Plex, Lidarr and LRCGET scan.
+Every song lives in albums/, the one library Plex and Lidarr scan.
 A song MusicAI picks on its own is on *probation* until its score graduates
 it; a disliked song is *soon to go*: first in line when disk space runs low
 (library_review.py decides what is kept). Each state is a folder of relative
@@ -38,7 +38,7 @@ LIBRARY_ROOT = os.environ.get("ALBUM_DIR", "/music/albums")
 STATE_DIR = os.environ.get("LIBRARY_STATE_DIR",
                            os.path.join(os.environ.get("DATA_DIR", "/app/data"), "library"))
 AUDIO_EXTENSIONS = (".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wma")
-LYRICS_EXTENSIONS = (".lrc", ".txt")     # LRCGET's files, next to the song under its name
+LYRICS_EXTENSIONS = (".lrc", ".txt")     # lyrics files, next to the song under its name
 
 
 def _root() -> str:
@@ -189,11 +189,17 @@ def _carry_lyrics(old: str, new: str) -> None:
 
 def moved(old: str, new: str) -> None:
     """A song moved (or its file was replaced at another path): its lyrics
-    files and its state follow it, with the date it entered that state."""
+    files, its state (with the date it entered it) and its places in Plex
+    playlists follow it."""
     try:
         _carry_lyrics(old, new)
     except OSError as exc:
         logger.warning(f"Lyrics of {old} could not follow it to {new}: {exc}")
+    try:
+        import playlist_keeper
+        playlist_keeper.note_move(old, new)         # it goes back in its playlists
+    except Exception as exc:
+        logger.warning(f"Could not note that {old} moved: {exc}")
     old_rel, new_rel = _rel(old), _rel(new)
     if old_rel is None or old_rel == new_rel:
         return

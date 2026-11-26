@@ -89,19 +89,30 @@ low — not before. Each user has a "Soon to go" Plex
 playlist holding exactly that list; rating a song on it four stars or more
 (`SOON_TO_GO_RESCUE_RATING`, Plex's 0–10 scale) takes it off.
 
-**The admin's one star.** While one-star deletion is on (the admin's
-`/one_star_delete` command in Discord; `ONE_STAR_DELETE` is the default), a
-track the admin rates exactly one star is deleted within a minute
-(`one_star_watcher.py`). Only the admin's one star deletes anything, and only
-a rating given while deletion is on: the time it was switched on is kept
+**The admin's Delete playlist.** The admin has a Plex playlist named
+"Delete" (`DELETE_PLAYLIST_NAME`; created empty when missing, and only the
+admin sees it). Once a day the metadata daemon deletes every song in it, no
+matter what: ratings, requests, probation and Lidarr don't keep it
+(`delete_playlist.py`). When Lidarr has the file, Lidarr deletes it and its
+album is unmonitored, so Lidarr doesn't download the song again; the album's
+other songs then stay like any other song (deleted only for disk space, after
+lower-scoring songs). The song leaves the playlist with its file, is
+blacklisted for every user, and the admin gets a notice listing what was
+deleted. A song whose file the container can't reach stays in the playlist.
+
+**The admin's one star** is off unless the admin switches it on (the
+`/one_star_delete` command in Discord; `ONE_STAR_DELETE` is the default, off).
+While it is on, a track the admin rates exactly one star is deleted within a
+minute (`one_star_watcher.py`). Only the admin's one star deletes anything, and
+only a rating given while deletion is on: the time it was switched on is kept
 (`ONE_STAR_DELETE_SINCE` in `DATA_DIR/settings.json`), and songs rated one
 star before that, such as while it was off, stay when it is switched back
 on. To delete one of them, clear its rating and rate it one star again.
 
 **Blacklisting.** A rating is easy to give by mistake, so no rating and no
 one-star deletion blacklists a song; it can always be requested or
-downloaded again. Only the review's deletions below blacklist a song, for
-every user. Asking for a song again (a Discord request) takes it off every
+downloaded again. Only the review's deletions below and the admin's Delete
+playlist blacklist a song, for every user. Asking for a song again (a Discord request) takes it off every
 blacklist: an explicit request wins over an earlier deletion.
 
 **Never deleted** by the review: files of albums Lidarr monitors (Lidarr
@@ -133,6 +144,7 @@ docker exec -w /app musicaio python3 library_review.py --when end --dry-run
 | `DISK_DELETE_MAX` | `250` | Most songs one review deletes for space: other data on the same disk can fill it, and the library should not pay for all of it. |
 | `SOON_TO_GO_RESCUE_RATING` | `8` | Plex rating (0–10) that takes a song off the soon-to-go list. |
 | `ENABLE_AUTO_DELETE` | `true` | `false`: the review deletes nothing. |
-| `ONE_STAR_DELETE` | `true` | Default for the admin's one-star deletion; `/one_star_delete on\|off` changes it at runtime (kept in `DATA_DIR/settings.json`). |
+| `ONE_STAR_DELETE` | `false` | Default for the admin's one-star deletion; `/one_star_delete on\|off` changes it at runtime (kept in `DATA_DIR/settings.json`). |
 | `ONE_STAR_POLL_SECONDS` | `60` | How often the one-star watcher checks Plex. |
+| `DELETE_PLAYLIST_NAME` | `Delete` | The admin's playlist whose songs the daily pass deletes. |
 | `LIBRARY_STATE_DIR` | `$DATA_DIR/library` | Where the state links live. |

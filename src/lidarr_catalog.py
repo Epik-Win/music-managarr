@@ -181,6 +181,7 @@ class LidarrCatalog:
         self._artists_with_files: List[int] = []
         self._track_file_paths: Optional[Set[str]] = None
         self._track_file_ids: Dict[str, Tuple[int, int]] = {}   # local path -> (artist id, file id)
+        self._files_by_path: Optional[Dict[str, dict]] = None    # local path -> Lidarr's track file
         self._artists: Dict[int, Tuple[str, str]] = {}   # id -> (name, local path)
         self._monitored_artists: Set[int] = set()
         self._kept_paths: Optional[Set[str]] = None
@@ -327,6 +328,33 @@ class LidarrCatalog:
                     logger.debug(f"Lidarr trackfile listing failed for artist {artist_id}: {exc}")
             self._kept_paths = paths
         return self._kept_paths
+
+    def _file_at(self, local_path: str) -> Optional[dict]:
+        """Lidarr's track file at this local path, if it has one."""
+        if self._files_by_path is None:
+            self._files_by_path = {}
+            for artist_id in self._artists_with_files:
+                for f in self._get("trackfile", artistId=artist_id):
+                    if f.get("path"):
+                        self._files_by_path[os.path.normpath(self.to_local(f["path"]))] = f
+        return self._files_by_path.get(os.path.normpath(local_path))
+
+    def forget_track_file(self, local_path: str) -> Optional[str]:
+        """Have Lidarr delete its own file at this path and stop wanting it:
+        the album is unmonitored, so Lidarr doesn't download the song again.
+        Returns the album's title when Lidarr had the file, else None."""
+        found = self._file_at(local_path)
+        if not found:
+            return None
+        headers = {"X-Api-Key": self.api_key}
+        requests.delete(f"{self.base_url}/api/v1/trackfile/{found['id']}", headers=headers,
+                        timeout=self.timeout).raise_for_status()
+        album = next((a for a in self.albums if a.id == found.get("albumId")), None)
+        if album is not None:
+            requests.put(f"{self.base_url}/api/v1/album/monitor", headers=headers,
+                         json={"albumIds": [album.id], "monitored": False}, timeout=self.timeout).raise_for_status()
+            album.monitored = False
+        return album.title if album else ""
 
     def track_file_dir(self, album: LidarrAlbum) -> Optional[str]:
         """Folder where Lidarr keeps this album's files (fetched lazily)."""

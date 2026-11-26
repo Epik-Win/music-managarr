@@ -61,6 +61,14 @@ class TestDetecting:
         assert covers._work('Theme「Example Show Episode 4 OST」Epic Cover') == 'Example Show'
         assert covers._work('Nocturne (Live)') == ''
 
+    def test_a_soundtrack_named_between_dashes(self):
+        assert covers._work('Example Show OST 3 - Track 18 - Nocturne') == 'Example Show'
+        assert covers._work('Example Show OST- Night Theme') == 'Example Show'
+        assert covers._work('Artist - Song - Live') == ''
+        assert covers.song_names('Track 18 - Nocturne', 'Example Show OST 3 - Track 18 - Nocturne') == ['Nocturne']
+        assert covers.song_names('Soundtrack 2 My Life', 'Artist - Soundtrack 2 My Life (Cover)')[0] == 'Soundtrack 2 My Life'
+        assert covers.song_names('The Score')[0] == 'The Score'
+
     def test_the_songs_own_name(self):
         assert covers.song_names('Heat「Show Episode 7 OST」Epic Orchestral Cover')[0] == 'Heat'
         assert covers.song_names('Them vs Us Theme「Show OST」＜Hollow Remaster＞ Epic Rock Cover') == ['Them vs Us Theme', 'Hollow']
@@ -89,6 +97,17 @@ class TestOfficialSong:
 
     def test_a_fans_upload_of_the_official_recording_is_no_cover(self):
         assert _find('Nocturne', 'Some Fan', 'Nocturne (Example Show OST Extended)', 'Some Fan', hits=[OFFICIAL, GUITAR]) is None
+
+    def test_a_fans_upload_at_the_soundtracks_length_is_that_recording(self):
+        found = _find('Track 18 - Nocturne', 'Example Show OST 3', 'Example Show OST 3 - Track 18 - Nocturne',
+                      'Some Fan', duration=225, hits=[OFFICIAL, GUITAR])
+        assert _ids(found['official']) == ['1'] and found['reupload'] and found['covers'] == []
+        # Another length: an edit or a medley, not that recording.
+        assert _find('Track 18 - Nocturne', 'Example Show OST 3', 'Example Show OST 3 - Track 18 - Nocturne',
+                     'Some Fan', duration=400, hits=[OFFICIAL, GUITAR]) is None
+        # The performer's own release of it: a cover after all.
+        assert 'reupload' not in _find('Nocturne', 'Studio Band', 'Studio Band - Nocturne (Example Show OST)',
+                                       'Studio Band', duration=224)
 
     def test_no_official_song_is_nothing_to_ask(self):
         assert _find('Nocturne', 'Studio Band', 'Nocturne Epic Cover', 'Studio Band', hits=[MINE, KARAOKE, REMIX]) is None
@@ -167,6 +186,16 @@ class TestSettling:
     def test_a_message_asking_for_the_cover_is_honoured(self, monkeypatch):
         assert self._settle(monkeypatch, 0, CONTEXT + f'; message={LINK} the cover please') is None and not self.asked
         assert self._settle(monkeypatch, 0, CONTEXT + '; message=https://example.com/cover')['artist'] == 'Example Composer'
+
+    def test_a_fans_upload_is_filed_as_the_recording_without_a_question(self, monkeypatch):
+        monkeypatch.setattr(covers.find, '__defaults__', ('', '', 0, _deezer(OFFICIAL, GUITAR)))
+        video = {covers.TITLE_FIELD: 'Example Show OST 3 - Track 18 - Nocturne', covers.UPLOADER_FIELD: 'Some Fan'}
+        self.asked = []
+        monkeypatch.setattr(rc, 'ask', lambda *a, **k: self.asked.append(1))
+        settled = Downloader.__new__(Downloader)._settle_cover('Example Show OST 3', 'Track 18 - Nocturne', LINK,
+                                                               CONTEXT, video)
+        assert (settled['artist'], settled['title']) == ('Example Composer', 'Nocturne') and not self.asked
+        assert settled['context'].endswith('deezer_track=1')
 
     def test_an_exact_deezer_track_is_left_alone(self, monkeypatch):
         assert self._settle(monkeypatch, 0, CONTEXT + '; deezer_track=99') is None and not self.asked

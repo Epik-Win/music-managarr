@@ -4,7 +4,10 @@ A video is a cover when its title or channel says so ("Epic Orchestral Cover",
 a channel named "… Covers"), or when it names a work ("(Example OST)", 'From
 "Example"') on whose soundtrack another artist has the same song, and its
 performer has released a recording of their own. A fan's upload of the official
-recording is not a cover: the uploader has no release of it.
+recording is not a cover: the uploader has no release of it. When the work's
+soundtrack has the song at the video's length, the upload is that recording
+("Example OST 3 - Track 18 - Nocturne" by a fan's channel): it is filed as the
+soundtrack's, without a question.
 
 The official song is looked for on Deezer: a track of the same title by the
 artist the video credits ("(Coldplay cover)", "Composer: …"), or on the named
@@ -74,6 +77,16 @@ def _same_artist(left: str, right: str) -> bool:
     return bool(a and b) and (sorted(a) == sorted(b) or "".join(a) == "".join(b))
 
 
+_DASH = re.compile(r"\s*[-–—]\s+|\s+[-–—]\s*")
+_NUMBERING = re.compile(r"^\s*(?:(?:track|tr\.?|no\.?|#)\s*)?\d+\s*$", re.I)
+
+
+def _before_soundtrack(text: str) -> str:
+    """"Example Show Episode 4" of "Example Show Episode 4 OST": the work."""
+    work = _SOUNDTRACK.split(text)[0]
+    return re.sub(r"\b(?:original|episode\s*\d+|ep\.?\s*\d+|season\s*\d+|cour\s*\d+)\b", " ", work, flags=re.I).strip(" -–—:")
+
+
 def _work(title: str) -> str:
     """The film, game or series a title says its song comes from."""
     for inside in _BRACKETED.findall(title or ""):
@@ -81,11 +94,14 @@ def _work(title: str) -> str:
         if named:
             return named.group(1).strip(" \"'“”‘’")
         if _SOUNDTRACK.search(inside):
-            work = _SOUNDTRACK.split(inside)[0]
-            return re.sub(r"\b(?:original|episode\s*\d+|ep\.?\s*\d+|season\s*\d+|cour\s*\d+)\b", " ", work, flags=re.I).strip(" -–—:")
+            return _before_soundtrack(inside)
     for inside in re.findall(r"[「『【]([^」』】]+)[」』】]", title or ""):
         if not says_cover(inside):
             return inside.strip()
+    # "Example Show OST 3 - Track 18 - Nocturne"
+    for part in _DASH.split(_BRACKETED.sub(" ", title or "")):
+        if _SOUNDTRACK.search(part) and not says_cover(part) and _words(_before_soundtrack(part)):
+            return _before_soundtrack(part)
     return ""
 
 
@@ -97,14 +113,22 @@ def _halves(video_title: str) -> List[str]:
 
 def song_names(title: str, video_title: str = "") -> List[str]:
     """What the covered song may be called: the request's title without what
-    makes it a cover, then a name in the video title's brackets ("＜Nocturne Remaster＞")."""
-    names = []
-    names.append(_COVER_TAIL.sub("", _BRACKETED.sub(" ", title or "")))
-    names += reversed(_halves(video_title))
+    makes it a cover, then a name in the video title's brackets ("＜Nocturne Remaster＞"),
+    then the parts of a dashed title that aren't a number or a soundtrack
+    ("Example OST 3 - Track 18 - Nocturne")."""
+    names = [_COVER_TAIL.sub("", _BRACKETED.sub(" ", title or ""))]
+    parts = list(reversed(_halves(video_title)))
     for inside in re.findall(r"[＜〈<]([^＞〉>]+)[＞〉>]", f"{title} {video_title}"):
-        names.append(_STYLE.sub(" ", _VERSION.sub(" ", inside)))
+        parts.append(_STYLE.sub(" ", _VERSION.sub(" ", inside)))
+    for text in (title, video_title):
+        dashed = _DASH.split(_COVER_TAIL.sub("", _BRACKETED.sub(" ", text or "")))
+        parts += dashed if len(dashed) > 1 else []
+    names += [p for p in parts if not _SOUNDTRACK.search(p)]
     found = []
-    for name in (re.sub(r"\s+", " ", n).strip() for n in names):
+    for name in (re.sub(r"\s+", " ", n).strip(" -–—:") for n in names):
+        name = re.sub(r"^(?:track|tr\.?|no\.?|#)\s*\d+\s*[-–—.:]\s*", "", name, flags=re.I)
+        if _NUMBERING.match(name):
+            continue
         if len(_core(name)) > 2 and _core(name) not in [_core(f) for f in found]:
             found.append(name)
     return found[:4]
@@ -198,7 +222,8 @@ def find(title: str, performer: str, video_title: str, uploader: str = "", descr
     official song Deezer has; None when the video isn't a cover or there is none.
 
     `official` holds the official song first. `sure` tells whether the video's
-    own words lead to it, rather than its popularity alone."""
+    own words lead to it, rather than its popularity alone. A fan's upload of
+    the soundtrack recording itself also has 'reupload': True (and no covers)."""
     seen = clues(video_title, uploader, description)
     if not seen:
         return None
@@ -222,9 +247,14 @@ def find(title: str, performer: str, video_title: str, uploader: str = "", descr
     scored = [t for t in originals if work and _on_soundtrack(t, work)]
     evident = credits + [t for t in scored if t not in credits]
     if not seen["says"]:
+        own = [t for t in tracks if mine(t)]
+        same = [t for t in scored if duration and abs(t["duration"] - duration) <= SAME_LENGTH]
+        if same and not own:
+            # A fan's upload of the soundtrack's own recording: that recording.
+            same.sort(key=lambda t: (abs(t["duration"] - duration), -t["rank"]))
+            return {"official": same[:1], "covers": [], "sure": True, "reupload": True}
         # Only another artist's soundtrack recording makes the performer's own
         # one a cover, and not when the performer is on that soundtrack too.
-        own = [t for t in tracks if mine(t)]
         if not scored or not own or any(_on_soundtrack(t, work) for t in own):
             return None
     evident.sort(key=lambda t: (t in credits and t in scored, t["rank"]), reverse=True)

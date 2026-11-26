@@ -83,7 +83,11 @@ apply:
   `DATA_DIR/fixmeta_quarantine/replaced_audio/`. If the download fails, the
   song goes to the admin untouched: the services' names for the wrong audio
   are never written instead. Talk, interview and trailer videos never count
-  as a recording, and a version must be the same version, remixer included.
+  as a recording, and a version must be the same version, remixer included;
+  a part must be the same part ("Pt. B" is not "Pt. C", "Pt. I" is "Pt. 1").
+  A longer file in which the services hear other parts of the same piece
+  (Pt. A and Pt. B in one upload) is the whole piece or a medley: its audio
+  stays.
 - **Junk answers are dropped:** an artist containing the song's own title is
   a cover upload's name.
 - **The answer that fits the tags goes first.** When a service confirms the
@@ -154,7 +158,14 @@ Every song lives in `albums/`, Lidarr's root folder (`fix_metadata._file_away`):
 - a folder a fix empties has its leftover cover set aside in
   `DATA_DIR/fixmeta_quarantine/leftover_art/`, so no empty album stays in
   Plex;
-- a move carries the song's probation/soon-to-go state and its lyrics file.
+- a move carries the song's probation/soon-to-go state and its lyrics file;
+- the song keeps its places in every user's Plex playlists: Plex sees a moved
+  file as a new song and drops the old one from its playlists, so the daemon
+  notes everyone's playlists before its daily work and, once Plex has scanned
+  the new file, puts the song back after the song it followed
+  (`playlist_keeper.py`; a song Plex never shows is given up after 3 days).
+  Fix Metadata, Manual Fix, Delete and Soon to go are MusicAI's own and left
+  alone.
 
 Fixes write the album artist too (Plex lists a track under it) and refresh
 the track, album and artist in Plex.
@@ -200,12 +211,24 @@ file, so every copy gets the rating.
 
 ## Lyrics files
 
-[LRCGET](https://github.com/tranxuanthang/lrcget) writes `<Title>.lrc` next
-to each song from LRCLIB; Plex reads them with *Prefer local metadata* on.
-`docker-compose.example.yml` has a service for it (a desktop in the browser
-on port 5800). Point it at `/music`, turn on auto-export of `.lrc`, and
-leave embedding off so it never rewrites the audio files. MusicAI moves and
-deletes the `.lrc` files with their songs.
+MusicAI writes each song's lyrics next to it (`lyrics_files.py`): synced
+lyrics as `<song>.lrc`, plain ones as `<song>.txt`. Plex shows them with
+*Prefer local metadata* on. They come from [LRCLIB](https://lrclib.net), looked
+up by the song's own tags: LRCLIB's exact match (the same artist, title and
+album, length within 2 s), else a search result with the same artist and
+title and a length within 3 s. Audio files are never rewritten.
+
+- A download gets its lyrics right away.
+- Once a day the metadata daemon looks up songs that have none yet, at most
+  `LYRICS_PER_PASS` a day, songs never asked first. Plex reads a lyrics file
+  added to a song it already has only when the album's metadata is refreshed,
+  so the daemon refreshes those albums afterwards. A song LRCLIB has nothing for is asked again after
+  `LYRICS_RETRY_DAYS`; an instrumental gets no file. What was asked is kept in
+  `DATA_DIR/lyrics_lookups.json`.
+
+MusicAI moves and deletes the lyrics files with their songs. A lyrics file
+put there by hand (from LRCGET, for one) is kept: a song that has one is not
+looked up.
 
 ## Settings
 
@@ -222,3 +245,6 @@ deletes the `.lrc` files with their songs.
 | `LYRICS_ID_SEARCHES_PER_DAY` | `30` | SearXNG searches allowed per day. |
 | `WHISPER_URL`, `SEARXNG_URL` | — | Whisper (`/v1/audio/transcriptions`) and SearXNG; unset, containers named `litellm` (port 4000) and `searxng` (8080) are looked up on the Docker network. |
 | `WHISPER_MODEL` | `whisper-1` | Transcription model; a large Whisper (large-v3-turbo) hears singing over loud music that small ones miss. |
+| `LYRICS_ENABLED` | `true` | Lyrics files from LRCLIB for downloads and, daily, for the library. |
+| `LYRICS_PER_PASS` | `1500` | Songs the daily pass looks up lyrics for. |
+| `LYRICS_RETRY_DAYS` | `30` | Days before a song LRCLIB had nothing for is asked again. |

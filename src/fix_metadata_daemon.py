@@ -16,6 +16,11 @@ Once a day it:
    an album into Lidarr's version, removes duplicate songs, and merges albums
    Plex has split in two. It runs after step 2 so albums whose tags were just
    repaired are merged the same day.
+5. Deletes every song in the admin's "Delete" playlist (delete_playlist.py).
+6. Writes lyrics files for songs that have none (lyrics_files.py).
+
+Before that work it notes every user's playlists, and on every poll it puts
+songs moved since back in their playlists (playlist_keeper.py).
 
 It runs as a standalone companion process (spawned by entrypoint.py alongside
 discord_bot.py, arl_server.py and one_star_watcher.py) rather than inside a
@@ -34,6 +39,7 @@ from typing import Dict, List
 import library_owner
 import manual_fix
 import metadata_repair
+import playlist_keeper
 import plex_auth
 import users
 from fix_metadata import run_fix_metadata
@@ -48,6 +54,8 @@ logger = logging.getLogger('musicai.fix_metadata_daemon')
 # Schedule keys for the library-wide jobs, which are shared rather than per user.
 LIBRARY_KEY = '__library__'
 MERGE_KEY = '__album_merge__'
+DELETE_KEY = '__delete_playlist__'
+LYRICS_KEY = '__lyrics__'
 
 
 def interval_seconds() -> int:
@@ -219,11 +227,81 @@ def merge_albums_if_due(admin_plex, interval: int) -> None:
         write_last_run(MERGE_KEY, now)
 
 
+def delete_playlist_if_due(admin_plex, plex_section: str, interval: int) -> None:
+    """Once per interval: delete every song in the admin's Delete playlist
+    (and create that playlist, empty, when the admin has none yet)."""
+    now = datetime.now(timezone.utc)
+    if not is_due(DELETE_KEY, now, interval):
+        return
+    import delete_playlist
+    try:
+        deleted = delete_playlist.run(admin_plex, plex_section)
+        logger.info(f"🗑️ Admin's '{delete_playlist.playlist_name()}' playlist: {len(deleted)} song(s) deleted")
+    finally:
+        write_last_run(DELETE_KEY, now)
+
+
+def lyrics_if_due(admin_plex, plex_section: str, interval: int) -> None:
+    """Once per interval: lyrics files for songs that have none (lyrics_files.py),
+    then their albums refreshed in Plex so the new files show."""
+    import lyrics_files
+    if not lyrics_files.enabled():
+        return
+    now = datetime.now(timezone.utc)
+    if not is_due(LYRICS_KEY, now, interval):
+        return
+    try:
+        lyrics_files.backfill()
+    finally:
+        write_last_run(LYRICS_KEY, now)
+    try:
+        lyrics_files.show_in_plex(admin_plex, admin_plex.library.section(plex_section))
+    except Exception as exc:
+        logger.warning(f"Could not have Plex show the new lyrics: {exc}")
+
+
+def _work_due(mapping, interval: int) -> bool:
+    """Whether a job that moves songs runs in this pass."""
+    now = datetime.now(timezone.utc)
+    keys = [LIBRARY_KEY, MERGE_KEY] + ([] if dry_run() else users.plex_usernames(mapping))
+    return any(is_due(key, now, interval) for key in keys)
+
+
+def keep_playlists(admin_plex, mapping, plex_section: str, interval: int) -> None:
+    """Songs moved since the last poll go back in their playlists once Plex
+    knows their new files; before a pass that moves songs, every user's
+    playlists are noted (playlist_keeper.py)."""
+    names = users.plex_usernames(mapping)
+
+    def server_for(username: str):
+        if not names or username == names[0]:
+            return admin_plex                       # the admin: the mapping's first user
+        try:
+            return admin_plex.switchUser(username)
+        except Exception as exc:
+            logger.debug(f"switchUser('{username}') failed: {exc}")
+            return None
+
+    playlist_keeper.settle(server_for, admin_plex.library.section(plex_section))
+    if _work_due(mapping, interval):
+        servers = {name: server_for(name) for name in names}
+        noted = playlist_keeper.snapshot({k: v for k, v in servers.items() if v is not None})
+        logger.info(f"📋 Noted {noted} playlist(s), so songs moved in this pass keep their places")
+
+
 def run_pass(admin_plex, mapping, plex_section: str, interval: int) -> None:
     global _files_changed
     _files_changed = 0
     state = manual_fix.load_state()
     try:
+        try:
+            keep_playlists(admin_plex, mapping, plex_section, interval)
+        except Exception as exc:
+            logger.warning(f"Playlist upkeep failed: {exc}")
+        try:
+            delete_playlist_if_due(admin_plex, plex_section, interval)
+        except Exception as exc:
+            logger.warning(f"Delete playlist pass failed: {exc}")
         unresolved = process_due_users(admin_plex, mapping, plex_section, interval)
         unresolved.extend(repair_library_if_due(admin_plex, plex_section, interval, state))
         if unresolved:
@@ -238,6 +316,11 @@ def run_pass(admin_plex, mapping, plex_section: str, interval: int) -> None:
     finally:
         manual_fix.send_pending_notifications(state)
         manual_fix.save_state(state)
+    # Last: the lyrics lookups take a while and hold nothing above back.
+    try:
+        lyrics_if_due(admin_plex, plex_section, interval)
+    except Exception as exc:
+        logger.warning(f"Lyrics pass failed: {exc}")
 
 
 def main() -> int:

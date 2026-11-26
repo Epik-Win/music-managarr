@@ -55,7 +55,9 @@ See [library.md](library.md).
 | `DISK_DELETE_MAX` | `250` | Most songs deleted for space per review. |
 | `SOON_TO_GO_RESCUE_RATING` | `8` | Plex rating (0–10) that takes a song off the soon-to-go list. |
 | `ENABLE_AUTO_DELETE` | `true` | `false`: nothing is deleted by the review. |
-| `ONE_STAR_DELETE` / `ONE_STAR_POLL_SECONDS` | `true` / `60` | The admin's one-star deletion (default; `/one_star_delete` changes it at runtime) and how often it checks Plex. |
+| `ONE_STAR_DELETE` / `ONE_STAR_POLL_SECONDS` | `false` / `60` | The admin's one-star deletion (default; `/one_star_delete` changes it at runtime) and how often it checks Plex. |
+| `DELETE_PLAYLIST_NAME` | `Delete` | The admin's Plex playlist whose songs are deleted once a day. |
+| `LYRICS_ENABLED` / `LYRICS_PER_PASS` / `LYRICS_RETRY_DAYS` | `true` / `1500` / `30` | Lyrics files from LRCLIB: on or off, songs looked up per day, days before a song LRCLIB lacked is asked again. See [fix-metadata.md](fix-metadata.md#lyrics-files). |
 | `LIBRARY_STATE_DIR` | `$DATA_DIR/library` | Probation and soon-to-go links. |
 | `ALBUM_DIR` | `/music/albums` | The library. |
 | `PUID` / `PGID` | owner of `ALBUM_DIR` | Who owns the songs and folders MusicAI writes (it runs as root for the VPN; Lidarr, running as this user, must be able to rename and re-tag them). Checked every few minutes by the metadata daemon (`library_owner.py`). |

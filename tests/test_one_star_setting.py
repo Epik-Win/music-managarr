@@ -25,6 +25,8 @@ def _blacklist_db(path, rows):
 def test_the_setting_defaults_to_the_environment_and_the_admins_choice_wins(tmp_path, monkeypatch):
     monkeypatch.setenv('DATA_DIR', str(tmp_path))
     monkeypatch.delenv('ONE_STAR_DELETE', raising=False)
+    import one_star_watcher
+    assert one_star_watcher.enabled() is False                  # off unless switched on
     assert runtime_settings.get_bool('ONE_STAR_DELETE', True) is True
     monkeypatch.setenv('ONE_STAR_DELETE', 'false')
     assert runtime_settings.get_bool('ONE_STAR_DELETE', True) is False

@@ -1,4 +1,4 @@
-# Example stack: MusicAI, the yt-dlp PO-token sidecar, Lidarr and LRCGET.
+# Example stack: MusicAI, the yt-dlp PO-token sidecar and Lidarr.
 # Copy to docker-compose.yml next to your .env (see .env.example), adjust the
 # host paths and IPs, then `docker compose pull && docker compose up -d`.
 #
@@ -183,25 +183,6 @@ services:
       - 8686:8686
     restart: unless-stopped
 
-  # Lyrics files: LRCGET (a desktop app, in the browser on port 5800) writes
-  # <song>.lrc next to each song from LRCLIB; MusicAI moves and deletes them
-  # with their song. Point it at /music and turn on auto-export of .lrc.
-  lrcget:
-    image: ghcr.io/crywolf203/lrcget-unraid:latest
-    container_name: lrcget
-    environment:
-      - USER_ID=1000                             # the library's owner, so .lrc files match it
-      - GROUP_ID=1000
-      - UMASK=002
-      - KEEP_APP_RUNNING=1
-      - WEB_AUDIO=1
-    volumes:
-      - /path/to/lrcget/config:/config
-      - /srv/media/music/albums:/music
-    ports:
-      - 5800:5800
-    shm_size: 2gb
-    restart: unless-stopped
 
 networks:
   default_net:
