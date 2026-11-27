@@ -81,7 +81,7 @@ class TestRunPass:
         monkeypatch.setattr(fmd, 'process_due_users', lambda *a: [flagged])
         monkeypatch.setattr(fmd, 'repair_library_if_due', lambda *a: [scanned])
         monkeypatch.setattr(manual_fix, 'add_tracks', lambda plex, entries, state: calls.append(('add', [e['rating_key'] for e in entries])))
-        monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state: calls.append(('notify',)))
+        monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state, *_: calls.append(('notify',)))
         monkeypatch.setattr(manual_fix, 'save_state', lambda state: calls.append(('save',)))
 
         fmd.run_pass(admin_plex=object(), mapping={'b': 'bob'}, plex_section='Music', interval=86400)
@@ -98,7 +98,7 @@ class TestRunPass:
         plex = SimpleNamespace(library=SimpleNamespace(section=lambda name: section))
         monkeypatch.setenv('METADATA_REPAIR_DRY_RUN', 'false')
         monkeypatch.setattr(manual_fix, 'load_state', lambda: {'open': {}, 'resolved_unsent': []})
-        monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state: None)
+        monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state, *_: None)
         monkeypatch.setattr(manual_fix, 'save_state', lambda state: None)
         monkeypatch.setattr(fmd, 'process_due_users', lambda *a: [])
         monkeypatch.setattr(fmd, 'merge_albums_if_due', lambda *a: None)
@@ -120,7 +120,7 @@ class TestRunPass:
             raise ConnectionError('plex down')
 
         monkeypatch.setattr(fmd, 'process_due_users', plex_down)
-        monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state: calls.append('notify'))
+        monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state, *_: calls.append('notify'))
         monkeypatch.setattr(manual_fix, 'save_state', lambda state: calls.append('save'))
         try:
             fmd.run_pass(admin_plex=object(), mapping={}, plex_section='Music', interval=86400)
@@ -187,7 +187,7 @@ class TestRunPass:
         monkeypatch.setattr(fmd, 'process_due_users', lambda *a: [])
         monkeypatch.setattr(fmd, 'repair_library_if_due', lambda *a: [])
         monkeypatch.setattr(fmd, 'merge_albums_if_due', lambda *a: (_ for _ in ()).throw(RuntimeError('boom')))
-        monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state: calls.append('notify'))
+        monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state, *_: calls.append('notify'))
         monkeypatch.setattr(manual_fix, 'save_state', lambda state: calls.append('save'))
         fmd.run_pass(admin_plex=object(), mapping={}, plex_section='Music', interval=86400)
         assert calls == ['notify', 'save']

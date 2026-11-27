@@ -45,7 +45,12 @@ going through a Mullvad VPN tunnel inside the container.
 - **Metadata that gets fixed.** Drop a mistagged song in a Plex playlist
   called *Fix Metadata* and it is fingerprinted (or identified by its sung
   lyrics), retagged, refiled and given cover art. A daily scan repairs the
-  whole library. See [docs/fix-metadata.md](docs/fix-metadata.md).
+  whole library. What neither can identify goes to the admin's *Manual Fix*
+  playlist, and with [Debugarr](https://github.com/Epik-Win/debugarr) to the
+  local AI first: once it has been through a batch, the admin gets one
+  message about it (what was fixed, what needs them) and can answer with
+  the right names. See
+  [docs/fix-metadata.md](docs/fix-metadata.md).
 - **Lyrics in Plex.** Songs get a synced `.lrc` (or plain `.txt`) lyrics
   file from LRCLIB when it has them, on download and in a daily pass.
 - **Lidarr as the librarian** — its folders, naming, upgrades and new
@@ -228,6 +233,7 @@ python3 album_artist_merger.py [--pass lidarr|songs|plex|…] [--artist NAME] [-
 | `metadata_proxy.py`, `library_owner.py` | Metadata lookups outside the VPN (downloads stay in it); library files handed to the library's owner. |
 | `discord_bot.py`, `link_extractor.py`, `admin_notify.py` | The bot; links → tracks; private notices for the admin. |
 | `fix_metadata_daemon.py`, `fix_metadata.py`, `metadata_repair.py`, `manual_fix.py` | Daily metadata work. |
+| `debug_issues.py` | Manual Fix songs reported to Debugarr; the fixes its local AI or the admin sends back, applied. |
 | `audio_id.py`, `lyrics_id.py`, `lyrics_files.py` | Fingerprinting (AcoustID, ACRCloud, audd, Shazam), identification by lyrics, lyrics files. |
 | `artwork.py`, `text_repair.py` | Cover art; mojibake. |
 | `lidarr_catalog.py`, `album_artist_merger.py`, `song_dedup.py`, `plex_refile.py` | Lidarr's catalogue; duplicate albums and songs; albums under the wrong artist. |

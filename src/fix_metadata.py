@@ -1029,14 +1029,17 @@ def run_fix_metadata(
 
     stats: Dict = {"fixed": 0, "skipped": 0, "failed": 0, "unresolved": []}
 
-    def hand_to_admin(plex_track, current: dict, reason: str) -> None:
+    def hand_to_admin(plex_track, current: dict, reason: str, heard=()) -> None:
         """Nothing could identify this track: take it off the user's playlist
-        and report it so the daemon adds it to the admin's Manual Fix list."""
+        and report it so the daemon adds it to the admin's Manual Fix list,
+        with what fingerprinting heard in it."""
+        from metadata_repair import heard_summary
         stats["unresolved"].append({
             "rating_key": str(getattr(plex_track, "ratingKey", "")),
             "label": track_label(current),
             "reason": reason,
             "source": f"flagged by {plex_username or 'admin'}",
+            "heard": heard_summary(heard),
         })
         try:
             playlist.removeItems([plex_track])
@@ -1348,7 +1351,7 @@ def run_fix_metadata(
                 if not names_complete and not admin_reason.startswith("identified as"):
                     admin_reason = (admin_reason or "names incomplete") + "; the names are still incomplete"
                 logger.info(f"  {label}: {admin_reason} (artwork: {art}) — handing to admin")
-                hand_to_admin(plex_track, current, admin_reason)
+                hand_to_admin(plex_track, current, admin_reason, voted)
                 continue
 
         # The act's current name, not an old one ("YBN Cordae" is "Cordae").

@@ -21,7 +21,9 @@ cycle may run only once a month. Each run:
    short notice about it in the admin's Discord thread (`manual_fix.py`).
    Every user has their own Fix Metadata playlist, but Manual Fix is the
    admin's alone: a song another user flagged that can't be fixed goes only
-   there (it leaves the user's Fix Metadata, and they never get a Manual Fix);
+   there (it leaves the user's Fix Metadata, and they never get a Manual Fix).
+   With Debugarr configured, each song is also handed to its local AI first
+   (see [Manual Fix and Debugarr](#manual-fix-and-debugarr));
 4. reconciles albums with Lidarr: folds second copies of an album into
    Lidarr's version, removes duplicate songs and merges albums Plex split in
    two (`album_artist_merger.lidarr_reconcile`);
@@ -34,6 +36,44 @@ so a restart only runs what is due. `METADATA_REPAIR_DRY_RUN=true` (the
 default) makes steps 1–3 log what they would change and skips the users'
 playlists; set it to `false` to repair. `MERGER_DRY_RUN=true` does the same
 for step 4.
+
+## Manual Fix and Debugarr
+
+With `DEBUGGARR_URL` and `DEBUGGARR_API_SECRET` set, every song that lands in
+Manual Fix is reported to [Debugarr](https://github.com/Epik-Win/debugarr) as
+an issue (`debug_issues.py`), and the notice in the admin's Discord thread is
+not used. The songs of one pass go in one batch, which Debugarr works through
+as one task. The issue says what is missing or wrong, what MusicAI tried, and
+carries the evidence: Plex's names, the file's tags, folders and length, what
+fingerprinting heard, and what Deezer and Lidarr list under the song's names.
+Its fix is the song's artist, album and title, starting from the names Plex
+shows (what Manual Fix checks); the file's own names are part of the evidence.
+
+Debugarr's local AI fills them in from that evidence only: every value must
+appear in it. MusicAI then checks the answer before writing anything: Deezer
+or Spotify must list that song by that artist within a few seconds of the
+file's length (or, for a song that exists nowhere else, the artist's own
+upload must), on that album or one Lidarr lists for the artist. A confirmed
+answer is written like a Fix Metadata fix (tags; a file Lidarr owns stays in
+Lidarr's folder, a song Lidarr knows gets its folder and naming; cover; Plex
+refresh). It counts as fixed, and the song leaves Manual Fix, once Plex shows
+the new names; if Plex still shows the old ones an hour later (Plex can file
+an album under another artist whatever its tags say), the fix failed and the
+admin is told what Plex shows. An answer that fails is given back to the AI
+once, with why.
+
+The admin hears nothing while the batch is being worked through. Once every
+song in it has an outcome, Debugarr sends one private message about the whole
+batch: what was fixed, and each song that needs the admin, with why
+(`!bug show <code>` gives everything known and tried about it, with a link
+to the song in Plex). Later changes edit that message; it is not sent again.
+The admin can reply `!bug set <code> artist="…" album="…"
+title="…"` (MusicAI writes those names as given), `!bug retry <code> <hint>`,
+or `!bug done <code>`, which takes the song off Manual Fix. Missing covers
+and wrong recordings come straight to the admin, since there is nothing for
+the AI to fill in. A song that leaves Manual Fix another way closes its
+issue, and the message is removed once none of its songs needs the admin. Fixes are picked up on every poll of the daemon
+(every few minutes), not only once a day; nothing is reported in a dry run.
 
 ## Identifying a song
 

@@ -11,6 +11,10 @@ playlist is the admin's to-do list. The admin gets one short private notice
 (admin_notify.py, in their requests thread) when tracks are added, replacing
 the previous one, and it is removed once the playlist is empty. What the
 admin was told is kept in DATA_DIR, so nothing is announced twice.
+
+With Debugarr configured (debug_issues.py) each track is reported there
+instead: its local AI tries to fix it, and the admin is messaged about the
+rest. A track that leaves the playlist closes its issue.
 """
 import json
 import logging
@@ -37,12 +41,13 @@ def load_state() -> Dict:
         if isinstance(state, dict):
             state.setdefault('open', {})
             state.setdefault('resolved_unsent', [])
+            state.setdefault('issues_to_close', [])
             return state
     except FileNotFoundError:
         pass
     except Exception as exc:
         logger.warning(f"Could not read Manual Fix state, starting fresh: {exc}")
-    return {'open': {}, 'resolved_unsent': []}
+    return {'open': {}, 'resolved_unsent': [], 'issues_to_close': []}
 
 
 def save_state(state: Dict) -> None:
@@ -95,6 +100,7 @@ def add_tracks(admin_plex, entries: List[Dict[str, str]], state: Dict) -> int:
             'label': entry['label'],
             'reason': entry['reason'],
             'source': entry['source'],
+            'heard': entry.get('heard') or [],
             'notified': False,
         }
     logger.info(f"📝 Added {len(new_items)} track(s) to the admin's '{PLAYLIST_NAME}' playlist")
@@ -128,22 +134,58 @@ def prune_fixed(admin_plex, state: Dict) -> int:
             # Only report a fix for something the admin was told about.
             if record and record.get('notified'):
                 state['resolved_unsent'].append(track_label(track_meta(item)))
+            _close_issue(state, str(item.ratingKey), record, f'fixed: now {track_label(track_meta(item))}')
         logger.info(f"✅ Removed {len(fixed)} fixed track(s) from '{PLAYLIST_NAME}'")
     remaining = {str(item.ratingKey) for item in items} - {str(item.ratingKey) for item in fixed}
     # Tracks Plex dropped from the playlist (deleted files, or removed by the
     # admin by hand) are no longer anything to track.
     for key in list(state['open']):
         if key not in remaining:
-            state['open'].pop(key)
+            _close_issue(state, key, state['open'].pop(key), 'the song left the Manual Fix playlist')
     if not remaining:
         playlist.delete()
     return len(fixed)
 
 
-def send_pending_notifications(state: Dict) -> None:
+def _close_issue(state: Dict, key: str, record: Optional[Dict], detail: str) -> None:
+    """A track reported to Debugarr left the playlist: its issue is closed
+    on the next poll (debug_issues.close_finished)."""
+    if record and record.get('issue'):
+        state.setdefault('issues_to_close', []).append([key, detail])
+
+
+def drop(admin_plex, state: Dict, keys: List[str]) -> None:
+    """Take tracks off the playlist and out of the state (fixed, or closed
+    by the admin); the playlist is deleted once it is empty."""
+    keys = {str(k) for k in keys}
+    for key in keys:
+        state['open'].pop(key, None)
+    playlist = find_playlist(admin_plex)
+    if playlist is None:
+        return
+    items = playlist.items()
+    gone = [item for item in items if str(item.ratingKey) in keys]
+    if gone:
+        playlist.removeItems(gone)
+    if len(gone) == len(items):
+        playlist.delete()
+
+
+def send_pending_notifications(state: Dict, admin_plex=None) -> None:
     """When tracks are added to the playlist, replace the admin's notice with
     a short note saying so (no track list: the playlist is the list). The
-    notice is removed once the playlist is empty."""
+    notice is removed once the playlist is empty.
+
+    Given a Plex connection and with Debugarr configured, every track is
+    reported to Debugarr instead, and the notice goes once it has them all."""
+    if admin_plex is not None:
+        import debug_issues
+        if debug_issues.enabled():
+            debug_issues.close_finished(state)
+            if debug_issues.report_open(admin_plex, state) and all(rec.get('issue') for rec in state['open'].values()):
+                admin_notify.resolve_notification(NOTIFICATION_ID)
+            state['resolved_unsent'] = []
+            return
     unsent = [rec for rec in state['open'].values() if not rec.get('notified')]
     if unsent:
         if not admin_notify.resolve_notification(NOTIFICATION_ID):

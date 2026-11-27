@@ -1152,16 +1152,36 @@ def reconcile(meta: Dict[str, str], answer: Optional[Dict[str, str]]) -> Optiona
 
 # ── Audio fingerprinting ─────────────────────────────────────────────────────
 
+# What fingerprinting heard in the song resolve() last looked at, kept for a
+# song handed to the admin: their evidence of what it may be.
+_last_heard: List[Dict] = []
+
+
+def heard_summary(answers) -> List[Dict[str, object]]:
+    """Fingerprint answers in short: artist, title, album, service, votes."""
+    out = []
+    for answer in answers or ():
+        if not isinstance(answer, dict) or not (answer.get('artist') or answer.get('title')):
+            continue
+        item = {k: _clean(answer.get(k)) for k in ('artist', 'title', 'album', 'service') if answer.get(k)}
+        if answer.get('votes'):
+            item['votes'] = answer['votes']
+        out.append(item)
+    return out[:5]
+
+
 def resolve_with_audio_id(file_path: str, meta: Dict[str, str]) -> Optional[Dict[str, str]]:
     """Identify the song from its audio. Each service's answer (best first)
     is merged into the known fields; a missing album is then asked of Lidarr.
     Returns the first complete result, or None."""
+    global _last_heard
     try:
         from audio_id import identify_track_by_audio_with_alternatives
         answers = identify_track_by_audio_with_alternatives(file_path)
     except Exception as exc:
         logger.debug(f"Fingerprinting failed for {file_path}: {exc}")
         return None
+    _last_heard = heard_summary(answers)
     agreeing = []
     for answer in answers or ():
         merged = merge_answer(meta, answer)
@@ -1217,6 +1237,8 @@ def resolve(file_path: str, meta: Dict[str, str]) -> Tuple[Optional[Dict[str, st
     a MusicBrainz recording of the same length.
     Every answer only fills fields `meta` is missing (see merge_answer).
     Returns (metadata, source)."""
+    global _last_heard
+    _last_heard = []
     by_isrc = deezer_track_by_isrc(file_isrc(file_path), audio_duration(file_path))
     if by_isrc and is_complete(by_isrc):
         return {k: by_isrc[k] for k in ('artist', 'album', 'title')}, 'ISRC'
@@ -1456,6 +1478,7 @@ def repair_library(section, skip_keys: Set[str], limit: int,
             logger.info(f"  {entry['label']}: Lidarr was unavailable during the lookup; retrying next pass")
         else:
             entry['reason'] = f'{reason}; not found by Lidarr or audio fingerprinting'
+            entry['heard'] = list(_last_heard)
             unresolved.append(entry)
             if not artist_known(meta.get('artist')):
                 park_unidentified(track, file_path, meta, dry_run=dry_run)
@@ -1544,6 +1567,7 @@ def repair_misfiled(section, skip_keys: Set[str], budget: int,
                     'label': track_label(meta),
                     'reason': f"artist unknown (Plex showed {m.plex_artist}); not found by Lidarr or audio fingerprinting",
                     'source': 'library scan',
+                    'heard': list(_last_heard),
                 })
             continue
         if budget <= 0:

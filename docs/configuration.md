@@ -126,6 +126,8 @@ See [fix-metadata.md](fix-metadata.md).
 | `LYRICS_ID_SEARCHES_PER_DAY` | `30` | SearXNG searches per day. |
 | `WHISPER_URL`, `SEARXNG_URL` | — | An OpenAI-compatible transcription endpoint and SearXNG (otherwise containers named `litellm` (port 4000) and `searxng` (8080) are looked up). |
 | `WHISPER_MODEL` | `whisper-1` | Transcription model. Use a large Whisper (large-v3-turbo): small ones can hear nothing in singing over loud music. |
+| `DEBUGGARR_URL` | — | Debugarr's address (`http://debuggarr:8095`). With it, Manual Fix songs go to Debugarr's local AI first, and the admin gets one message per batch once it is settled ([fix-metadata.md](fix-metadata.md#manual-fix-and-debugarr)). |
+| `DEBUGGARR_API_SECRET` | — | Debugarr's `API_SECRET`; or `DEBUGGARR_API_SECRET_FILE`, a file holding it (Debugarr's own env file works). |
 
 ## Discord and the ARL page
 

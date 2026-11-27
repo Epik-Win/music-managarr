@@ -56,7 +56,7 @@ def entry(key, label='X – Y [Z]', reason='unknown album', source='library scan
 
 
 def empty_state():
-    return {'open': {}, 'resolved_unsent': []}
+    return {'open': {}, 'resolved_unsent': [], 'issues_to_close': []}
 
 
 class TestManualFixPlaylist:

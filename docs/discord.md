@@ -34,8 +34,9 @@ Everything else is private:
   the admin are in it (plus anyone with *Manage Threads*). Nothing in a
   thread is auto-deleted, so the request history stays.
 - **Admin notices** — errors, the Deezer ARL expiring (with a link to the
-  ARL page, `ARL_PUBLIC_URL`), the Manual Fix to-do note — go in the
-  admin's own thread (a direct message if it can't be opened). Any process
+  ARL page, `ARL_PUBLIC_URL`), the Manual Fix to-do note (unless Debugarr
+  handles Manual Fix, see [fix-metadata.md](fix-metadata.md#manual-fix-and-debugarr))
+  — go in the admin's own thread (a direct message if it can't be opened). Any process
   can queue one (`admin_notify.py`); a changed notice is posted again so the
   admin is notified, and a resolved one is removed.
 - **"Which one is it?"** The only search result with your song's artist,

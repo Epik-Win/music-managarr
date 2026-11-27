@@ -78,7 +78,7 @@ def test_a_users_unresolved_fix_goes_only_to_the_admins_manual_fix(monkeypatch, 
     for step in ('keep_playlists', 'delete_playlist_if_due', 'merge_albums_if_due', 'rescan_if_changed', 'lyrics_if_due'):
         monkeypatch.setattr(fmd, step, lambda *a, **k: None)
     monkeypatch.setattr(fmd, 'repair_library_if_due', lambda *a: [])
-    monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state: None)
+    monkeypatch.setattr(manual_fix, 'send_pending_notifications', lambda state, *_: None)
 
     fmd.run_pass(admin, {'admin_discord': 'admin', 'friend_discord': 'friend'}, 'Music', 86400)
 

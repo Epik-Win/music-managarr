@@ -11,7 +11,10 @@ Once a day it:
    via Lidarr first, then audio fingerprinting (metadata_repair.py).
 3. Puts anything neither could identify into the admin-only "Manual Fix"
    playlist, removes tracks from it once their metadata is complete, and
-   keeps the admin's notice about it up to date (manual_fix.py).
+   keeps the admin's notice about it up to date (manual_fix.py). With
+   Debugarr configured, each such track is reported there for its local AI
+   to try, and the fixes it sends back are applied on every poll
+   (debug_issues.py).
 4. Reconciles albums (album_artist_merger.lidarr_reconcile): folds copies of
    an album into Lidarr's version, removes duplicate songs, and merges albums
    Plex has split in two. It runs after step 2 so albums whose tags were just
@@ -38,6 +41,7 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, List
 
+import debug_issues
 import library_owner
 import manual_fix
 import metadata_repair
@@ -306,17 +310,18 @@ def _server_for(admin_plex, names: List[str], username: str):
         return None
 
 
-def keep_playlists(admin_plex, mapping, plex_section: str, interval: int) -> None:
+def keep_playlists(admin_plex, mapping, plex_section: str, interval: int, moving: bool = False) -> None:
     """Songs moved since the last poll go back in their playlists once Plex
-    knows their new files; before a pass that moves songs, every user's
-    playlists are noted (playlist_keeper.py)."""
+    knows their new files; before a pass that moves songs (`moving`: fixes
+    from Debugarr are about to be applied), every user's playlists are noted
+    (playlist_keeper.py)."""
     names = users.plex_usernames(mapping)
 
     def server_for(username: str):
         return _server_for(admin_plex, names, username)
 
     playlist_keeper.settle(server_for, admin_plex.library.section(plex_section))
-    if _work_due(mapping, interval):
+    if moving or _work_due(mapping, interval):
         servers = {name: server_for(name) for name in names}
         noted = playlist_keeper.snapshot({k: v for k, v in servers.items() if v is not None})
         logger.info(f"📋 Noted {noted} playlist(s), so songs moved in this pass keep their places")
@@ -327,10 +332,23 @@ def run_pass(admin_plex, mapping, plex_section: str, interval: int) -> None:
     _files_changed = 0
     state = manual_fix.load_state()
     try:
+        # Fixes Debugarr has for Manual Fix songs, and songs the admin closed there.
+        waiting = [] if dry_run() else debug_issues.waiting(state)
         try:
-            keep_playlists(admin_plex, mapping, plex_section, interval)
+            keep_playlists(admin_plex, mapping, plex_section, interval,
+                           moving=any(issue.get('status') == 'fix_ready' for issue in waiting))
         except Exception as exc:
             logger.warning(f"Playlist upkeep failed: {exc}")
+        if waiting:
+            try:
+                _count_changes(debug_issues.act(admin_plex, state, waiting))
+            except Exception as exc:
+                logger.warning(f"Applying Debugarr's fixes failed: {exc}")
+        if not dry_run() and debug_issues.enabled():
+            try:
+                debug_issues.verify_applied(admin_plex, state, plex_section)
+            except Exception as exc:
+                logger.warning(f"Checking Debugarr's fixes in Plex failed: {exc}")
         try:
             delete_playlist_if_due(admin_plex, plex_section, interval)
         except Exception as exc:
@@ -347,7 +365,8 @@ def run_pass(admin_plex, mapping, plex_section: str, interval: int) -> None:
         # moved songs' old Plex items).
         rescan_if_changed(admin_plex, plex_section)
     finally:
-        manual_fix.send_pending_notifications(state)
+        # In a dry run nothing goes to Debugarr: its fixes would not be applied.
+        manual_fix.send_pending_notifications(state, None if dry_run() else admin_plex)
         manual_fix.save_state(state)
     try:
         picked_for_you_if_due(admin_plex, mapping, plex_section, interval)
