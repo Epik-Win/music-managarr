@@ -37,11 +37,11 @@ $DATA_DIR/library
 
 ## A song's life
 
-**Downloaded.** A song MusicAI picks on its own (trending, songs picked from
-the user's taste, album completion) arrives **on probation**. A song someone
-asked for (a Discord request, live or queued; an Exportify import) and a song
-from Spotify's popular editorial playlists arrive as permanent members of the
-library. Lidarr's own downloads are Lidarr's and permanent.
+**Downloaded.** A song MusicAI picks on its own (trending, Spotify's popular
+editorial playlists, songs picked from the user's taste, album completion)
+arrives **on probation**. A song someone asked for (a Discord request, live or
+queued; an Exportify import) arrives as a permanent member of the library.
+Lidarr's own downloads are Lidarr's and permanent.
 
 **Scored.** Each user's cycle scores every track for that user
 (`app.calculate_engagement_score`, 0–1):
@@ -69,10 +69,15 @@ are fresh:
    more leaves probation: it stays for good.
 2. **End of probation.** A probationary song that has been in the library
    for a whole pass (downloaded before the pass that just ran) and scores
-   below `PROBATION_DELETE_SCORE` (0.15) is deleted — whatever the free
-   space. A song from the pass that just ran waits for the next review, so
-   everyone gets a full cycle to listen to it (each user's "Trending Now
-   for You" and "You Might Like" playlists hold that cycle's new songs).
+   below the **probation bar** is deleted. The bar follows the free space:
+   with `DISK_PLENTY_GB` (100) or more free it is `PROBATION_DELETE_SCORE`
+   (0.15), so only songs nobody took to are deleted; as free space falls to
+   `DISK_LOW_GB` (10) it rises evenly to `PROBATION_DELETE_SCORE_LOW` (0.45),
+   so a filling disk keeps only the probationary songs people play (at 55 GB
+   free it is 0.30). It never goes above `GRADUATION_SCORE`. A song from
+   the pass that just ran waits for the next review, so everyone gets a full
+   cycle to listen to it (each user's "Trending Now for You" and "You Might
+   Like" playlists hold that cycle's new songs).
 3. **Disk space.** When free space is below `DISK_LOW_GB` (10), songs are
    deleted until `DISK_TARGET_GB` (20) is free, at most `DISK_DELETE_MAX`
    (250) per review:
@@ -138,7 +143,9 @@ docker exec -w /app musicaio python3 library_review.py --when end --dry-run
 | Variable | Default | Description |
 |---|---|---|
 | `GRADUATION_SCORE` | `0.55` | Best score at which a probationary song stays for good; songs at or above it are never deleted for space. |
-| `PROBATION_DELETE_SCORE` | `0.15` | Below this after a whole pass, a probationary song is deleted. |
+| `PROBATION_DELETE_SCORE` | `0.15` | The probation bar with plenty of free space: below it after a whole pass, a probationary song is deleted. |
+| `PROBATION_DELETE_SCORE_LOW` | `0.45` | The probation bar at `DISK_LOW_GB` free or less. |
+| `DISK_PLENTY_GB` | `100` | Free space from which the probation bar is at its lowest; below it the bar rises evenly towards `PROBATION_DELETE_SCORE_LOW`. |
 | `PROBATION_PENALTY` | `0.3` | Subtracted from a probationary song's score when choosing what to delete for space. |
 | `DISK_LOW_GB` | `10` | Free space below which songs are deleted. |
 | `DISK_TARGET_GB` | `20` | Free space a disk-space review stops at. |

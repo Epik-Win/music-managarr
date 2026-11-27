@@ -200,7 +200,8 @@ def test_low_disk_deletes_soon_to_go_first_then_probation_before_permanent(revie
     monkeypatch.setattr(review, 'DISK_TARGET_GB', 5.0 + 11 / 1024 ** 3)       # three 5-byte songs' worth
     disliked = add('A/B/disliked.mp3', scores=(0.4,))
     library_state.mark(disliked, library_state.SOON_TO_GO)
-    trial = add('A/B/trial.mp3', scores=(0.3,), probation_since=time.time() - 3 * 3600)
+    # On probation since this pass began: the probation bar leaves it to the disk-space order.
+    trial = add('A/B/trial.mp3', scores=(0.3,), probation_since=time.time() - 60)
     permanent_low = add('A/B/permanent.mp3', scores=(0.1,))
     permanent_ok = add('A/B/kept.mp3', scores=(0.45,))
     loved = add('A/B/loved.mp3', scores=(0.9,))
@@ -208,6 +209,33 @@ def test_low_disk_deletes_soon_to_go_first_then_probation_before_permanent(revie
     # trial: 0.3 − 0.3 penalty = 0.0 goes before the permanent song at 0.1
     assert done['space_deleted'] == [disliked, trial, permanent_low]
     assert os.path.exists(permanent_ok) and os.path.exists(loved)
+
+
+def test_the_probation_bar_rises_as_free_space_falls():
+    import library_review as review
+    assert review.probation_bar(400) == review.probation_bar(100) == 0.15
+    assert review.probation_bar(55) == 0.3                     # halfway between 100 GB and 10 GB
+    assert review.probation_bar(10) == review.probation_bar(2) == 0.45
+    assert review.probation_bar(70) < review.probation_bar(40) < review.probation_bar(20)
+
+
+def test_the_probation_bar_never_reaches_graduation(monkeypatch):
+    import library_review as review
+    monkeypatch.setattr(review, 'PROBATION_DELETE_SCORE_LOW', 0.9)
+    assert review.probation_bar(5) == review.GRADUATION_SCORE
+
+
+def test_a_filling_disk_ends_probation_for_songs_plenty_of_space_keeps(review_env, monkeypatch):
+    """A song played a little (0.3) outlasts probation with plenty of space,
+    and goes once the disk fills, before space is low enough for a sweep."""
+    review, section, add, data = review_env
+    song = add('A/B/played_once.mp3', scores=(0.3,), probation_since=time.time() - 40 * 86400)
+    review.review(section, 'end')                              # 100 GB free: bar 0.15
+    assert library_state.state_of(song) == library_state.PROBATION
+    monkeypatch.setattr(review, 'free_gb', lambda path: 30.0)  # bar 0.38, no space sweep yet
+    done = review.review(section, 'end')
+    assert done['probation_deleted'] == [song] and done['space_deleted'] == []
+    assert not os.path.exists(song) and _blacklisted(data, 'ann') == ['played_once']
 
 
 def test_nothing_is_deleted_without_lidarr_or_with_auto_delete_off(review_env, monkeypatch):

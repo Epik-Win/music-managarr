@@ -94,7 +94,8 @@ not finished. A user's cycle:
    is skipped. Plex being unreachable is not a skip: the worker exits so the
    manager retries.
 3. **Album completion**, **trending**, **queued Discord requests**,
-   **popular Spotify playlists**, **top artists** (synced to Lidarr), and
+   **popular Spotify playlists**, **top artists** (the user's favourite
+   artists from their taste, followed in Lidarr), and
    **songs picked from their taste** (similar to their loved songs on
    Last.fm and Deezer, and top songs of the artists Plex lists with their
    favourites). Once a user's taste is known, trending charts and popular

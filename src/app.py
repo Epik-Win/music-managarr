@@ -1629,6 +1629,23 @@ class MusicAIAnalyzer:
             logger.warning(f"Error getting recency-weighted top artists: {e}")
             return []
 
+    def get_taste_top_artists(self, limit=5):
+        """The user's favourite artists from their taste (taste.py: plays,
+        ratings and skips, the ones played lately first), in the shape of
+        get_recency_weighted_top_artists(): (artist, recent_listen_count,
+        avg_score, artist_score, most_recent_played). Empty while the taste
+        isn't known well enough."""
+        if not self.taste_ready():
+            return []
+        profile = self.taste
+        top = []
+        for key in profile.favourites(limit):
+            liking = profile.artists.get(key, 0.0)
+            score = round(liking * profile.lately.get(key, 0.4), 3)
+            top.append((profile.names.get(key, key), 0, round(liking, 3), score, 0))
+        logger.info(f"Top {len(top)} artists from this user's taste: {[(a[0], a[3]) for a in top]}")
+        return top
+
     def _lidarr_find_artist(self, artist_name, lidarr_url, headers):
         """Search Lidarr for an artist and return the raw search result dict, or None."""
         try:
@@ -1830,11 +1847,13 @@ class MusicAIAnalyzer:
 
     def sync_top_artists_to_lidarr(self, top_n=None, recency_days=30, min_artist_score=0.6, user_index=0):
         """
-        Keep exactly `top_n` artists followed in Lidarr at all times, based on RECENT
-        listening activity. Artists compete for these slots: as a new artist climbs
-        into the top N, whichever currently-followed artist has fallen the furthest
-        is evicted (unmonitored in Lidarr, but its already-downloaded music is left
-        alone).
+        Keep exactly `top_n` artists followed in Lidarr at all times: the user's
+        favourite artists from their taste (get_taste_top_artists), or, while the
+        taste isn't known well enough, the artists of their RECENT listening.
+        Artists compete for these slots: as a new artist climbs into the top N,
+        whichever currently-followed artist has fallen the furthest is evicted
+        (unmonitored in Lidarr, but its already-downloaded music is left alone).
+        It runs in each user's download cycle, so the list changes once a cycle.
 
         Returns: Dict with statistics {'top_artists': [...], 'added': int, 'evicted': int,
                                         'unchanged': int, 'errors': int}
@@ -1850,10 +1869,12 @@ class MusicAIAnalyzer:
 
         headers = {'X-Api-Key': lidarr_api, 'Content-Type': 'application/json'}
 
-        # 1. Compute the current top N based on recent listening
-        new_top = self.get_recency_weighted_top_artists(
-            limit=top_n, recency_days=recency_days, score_threshold=min_artist_score
-        )
+        # 1. The current top N: the taste's favourites, else recent listening
+        new_top = self.get_taste_top_artists(limit=top_n)
+        if not new_top:
+            new_top = self.get_recency_weighted_top_artists(
+                limit=top_n, recency_days=recency_days, score_threshold=min_artist_score
+            )
         if not new_top:
             logger.info("[LIDARR] No recently-active artists found; leaving current top-5 as-is")
             return stats
@@ -5141,8 +5162,10 @@ def _stage_popular_playlists(analyzer, cycle_stats: dict) -> None:
             return
         _push_cycle_status("User playlists", "Downloading popular playlist tracks")
         logger.info(f"📥 Downloading up to {CHART_PICKS} of {len(recommendations)} popular playlist song(s)...")
+        # MusicAI's own picks like the charts': on probation until the
+        # library review graduates or deletes them.
         downloaded = analyzer.download_recommended_music(recommendations, preference_confidence=0.85,
-                                                         target_dir=ALBUM_DIR, playlist='trending',
+                                                         playlist='trending',
                                                          limit=len(recommendations), max_downloads=CHART_PICKS)
         cycle_stats['downloads']['user_playlists'] = len(downloaded or [])
     except Exception as exc:
@@ -5167,7 +5190,8 @@ def _stage_top_artists(analyzer, cycle_stats: dict, user_index: int) -> None:
             logger.info("Lidarr not configured, downloading top artists directly")
             _download_top_artists_directly(analyzer, cycle_stats)
             return
-        logger.info("Recomputing top 5 based on recent listening activity (last 30 days)...")
+        logger.info("Recomputing the top artists from this user's taste "
+                    "(recent listening, last 30 days, while the taste isn't known yet)...")
         try:
             stats = analyzer.sync_top_artists_to_lidarr(
                 top_n=TOP_ARTIST_LIMIT, recency_days=30, min_artist_score=0.6, user_index=user_index,

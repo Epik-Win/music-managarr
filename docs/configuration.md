@@ -34,7 +34,7 @@ in `.env` (see `.env.example`); `docker-compose.example.yml` passes them in.
 | `PREFERENCE_CONFIDENCE_THRESHOLD` | `0.95` | Taste confidence a user needs before automatic downloads. |
 | `MIN_TRACKS_FOR_CONFIDENCE` | `50` | Played or rated tracks needed for a confidence value. |
 | `SCORE_THRESHOLD` | `0.3` | Score from which a track counts as liked (taste model, confidence). |
-| `TOP_ARTIST_LIMIT` | `5` | Top artists per user followed in Lidarr. |
+| `TOP_ARTIST_LIMIT` | `5` | Favourite artists per user followed in Lidarr (from their taste; their recent listening while it isn't known). |
 | `ENABLE_TIKTOK_TRENDING` | `false` | Include TikTok in trending discovery. |
 | `TRENDING_PLAYLIST_NAME` | `Trending Now for You` | Each user's playlist of their last cycle's trending songs (charts, popular playlists). A playlist titled "Trending Now" is renamed to it. |
 | `SIMILAR_PLAYLIST_NAME` | `You Might Like` | Each user's playlist of their last cycle's songs picked from their taste (songs like their loved ones, similar artists' top songs, album completion). Both are removed when the cycle is skipped or brings nothing for them. |
@@ -68,7 +68,8 @@ See [library.md](library.md).
 | Variable | Default | Description |
 |---|---|---|
 | `GRADUATION_SCORE` | `0.55` | Score at which a probationary song stays for good. |
-| `PROBATION_DELETE_SCORE` | `0.15` | Below this after a whole pass, a probationary song is deleted. |
+| `PROBATION_DELETE_SCORE` / `PROBATION_DELETE_SCORE_LOW` | `0.15` / `0.45` | The probation bar with `DISK_PLENTY_GB` or more free / at `DISK_LOW_GB`: below it after a whole pass, a probationary song is deleted. |
+| `DISK_PLENTY_GB` | `100` | Free space from which the probation bar is at its lowest. |
 | `PROBATION_PENALTY` | `0.3` | Lowers a probationary song's score when choosing what to delete for space. |
 | `DISK_LOW_GB` / `DISK_TARGET_GB` | `10` / `20` | Free space that starts / ends deleting for space. |
 | `DISK_DELETE_MAX` | `250` | Most songs deleted for space per review. |

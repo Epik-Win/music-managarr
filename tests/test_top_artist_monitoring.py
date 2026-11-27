@@ -147,3 +147,72 @@ def test_an_artist_another_user_follows_stays_monitored_when_this_user_drops_it(
     left = [r[0] for r in sqlite3.connect(tmp_path / 'alice' / 'music_ai.db').execute(
         'SELECT artist_name FROM lidarr_followed_artists')]
     assert left == []
+
+
+def _full_rotation_db(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute('CREATE TABLE lidarr_followed_artists (artist_name TEXT PRIMARY KEY, foreign_artist_id TEXT, '
+                 'lidarr_artist_id INTEGER, artist_score REAL, recent_listen_count INTEGER, '
+                 'followed_at TIMESTAMP, last_updated TIMESTAMP)')
+    conn.commit()
+    conn.close()
+
+
+def _taste(favourites):
+    """A taste profile whose favourites are the given (name, liking, lately)."""
+    import taste
+    profile = taste.Profile(user='alice')
+    for name, liking, lately in favourites:
+        key = taste.artist_key(name)
+        profile.artists[key] = liking
+        profile.lately[key] = lately
+        profile.names[key] = name
+    profile.songs = {str(i): 1.0 for i in range(taste.MIN_LOVED)}
+    return profile
+
+
+def test_the_rotation_follows_the_tastes_favourites(tmp_path, monkeypatch):
+    lidarr = FakeLidarr(artists=[], folders=[])
+    analyzer = _setup(tmp_path, monkeypatch, lidarr)
+    _full_rotation_db(tmp_path / 'alice' / 'music_ai.db')
+    monkeypatch.setattr(app, 'DB_PATH', str(tmp_path / 'alice' / 'music_ai.db'))
+    monkeypatch.setattr(app, 'APP_USER_NAME', 'alice')
+    analyzer.taste = _taste([('Played Lately', 0.6, 1.0), ('Loved Long Ago', 0.9, 0.4),
+                             ('Barely Liked', 0.2, 1.0)])
+    analyzer.get_recency_weighted_top_artists = lambda **kw: [('Recent Plays Only', 9, 0, 0.9, 0)]
+    analyzer._lidarr_find_artist = lambda name, url, headers: {'foreignArtistId': name}
+    analyzer._lidarr_add_or_monitor_artist = lambda name, data, url, headers: (name, 1)
+    stats = analyzer.sync_top_artists_to_lidarr(top_n=2, user_index=0)
+    # 0.6 × 1.0 played lately ranks above 0.9 × 0.4; 0.2 is not a favourite.
+    assert stats['top_artists'] == ['Played Lately', 'Loved Long Ago']
+    assert stats['added'] == 2
+
+
+def test_the_rotation_uses_recent_listening_while_the_taste_is_unknown(tmp_path, monkeypatch):
+    lidarr = FakeLidarr(artists=[], folders=[])
+    analyzer = _setup(tmp_path, monkeypatch, lidarr)
+    _full_rotation_db(tmp_path / 'alice' / 'music_ai.db')
+    monkeypatch.setattr(app, 'DB_PATH', str(tmp_path / 'alice' / 'music_ai.db'))
+    monkeypatch.setattr(app, 'APP_USER_NAME', 'alice')
+    analyzer.taste = None
+    analyzer.get_recency_weighted_top_artists = lambda **kw: [('Recent Plays Only', 9, 0, 0.9, 0)]
+    analyzer._lidarr_find_artist = lambda name, url, headers: {'foreignArtistId': name}
+    analyzer._lidarr_add_or_monitor_artist = lambda name, data, url, headers: (name, 1)
+    assert analyzer.sync_top_artists_to_lidarr(top_n=2, user_index=0)['top_artists'] == ['Recent Plays Only']
+
+
+def test_popular_playlist_songs_arrive_on_probation(monkeypatch):
+    analyzer = app.MusicAIAnalyzer.__new__(app.MusicAIAnalyzer)
+    analyzer.taste = None
+    analyzer.get_popular_spotify_playlists = lambda limit: [
+        {'name': 'Hits', 'tracks': [{'artist': 'Some Artist', 'name': 'Some Song', 'album': 'Some Album'}]}]
+    analyzer.without_disliked_artists = lambda recs, label: recs
+    calls = []
+    analyzer.download_recommended_music = lambda recs, **kw: calls.append(kw) or recs
+    monkeypatch.setattr(app, '_push_cycle_status', lambda *a, **k: None)
+    stats = {'downloads': {}, 'errors': {'list': []}}
+    app._stage_popular_playlists(analyzer, stats)
+    # No target folder: download_recommended_music marks MusicAI's own picks as on probation.
+    assert calls and not calls[0].get('target_dir')
+    assert stats['downloads']['user_playlists'] == 1

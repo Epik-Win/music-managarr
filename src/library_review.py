@@ -9,10 +9,13 @@ if the disk is already low (`--when start`):
 1. **Graduation** — a probationary song whose score reaches GRADUATION_SCORE
    for any user leaves probation and stays for good.
 2. **Probation review** (end of a pass) — a probationary song that has been
-   in the library for a whole pass and still scores below
-   PROBATION_DELETE_SCORE for every user is deleted, whatever the free space.
-   Songs downloaded in the pass that just ran wait for the next one, so
-   everyone gets a full cycle to listen to them.
+   in the library for a whole pass and still scores below the probation bar
+   for every user is deleted. The bar follows the free space: with
+   DISK_PLENTY_GB or more free it is PROBATION_DELETE_SCORE (only songs
+   nobody took to are deleted), and it rises evenly to PROBATION_DELETE_SCORE_LOW as
+   free space falls to DISK_LOW_GB, so a filling disk keeps fewer
+   probationary songs. Songs downloaded in the pass that just ran wait for
+   the next one, so everyone gets a full cycle to listen to them.
 3. **Disk space** — when free space is below DISK_LOW_GB, songs are deleted
    until DISK_TARGET_GB is free: soon-to-go songs first, then every other
    song by score, a probationary song's score lowered by PROBATION_PENALTY
@@ -55,9 +58,11 @@ def _env_float(name: str, default: float) -> float:
 
 GRADUATION_SCORE = _env_float("GRADUATION_SCORE", 0.55)
 PROBATION_DELETE_SCORE = _env_float("PROBATION_DELETE_SCORE", 0.15)
+PROBATION_DELETE_SCORE_LOW = _env_float("PROBATION_DELETE_SCORE_LOW", 0.45)
 PROBATION_PENALTY = _env_float("PROBATION_PENALTY", 0.3)
 DISK_LOW_GB = _env_float("DISK_LOW_GB", 10)
 DISK_TARGET_GB = _env_float("DISK_TARGET_GB", 20)
+DISK_PLENTY_GB = _env_float("DISK_PLENTY_GB", 100)
 DISK_DELETE_MAX = int(_env_float("DISK_DELETE_MAX", 250))
 ENABLE_AUTO_DELETE = os.environ.get("ENABLE_AUTO_DELETE", "true").strip().lower() == "true"
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
@@ -119,6 +124,24 @@ def pass_started() -> float:
 
 def free_gb(path: str) -> float:
     return shutil.disk_usage(path).free / 1024 ** 3
+
+
+def probation_bar(free: float) -> float:
+    """The score a probationary song must reach to outlast its probation,
+    given the free space in GB: PROBATION_DELETE_SCORE with DISK_PLENTY_GB
+    or more free, PROBATION_DELETE_SCORE_LOW at DISK_LOW_GB or less, and in
+    between in proportion. It never goes above GRADUATION_SCORE, so a song
+    that graduates is never one the bar would delete."""
+    plenty = min(PROBATION_DELETE_SCORE, PROBATION_DELETE_SCORE_LOW)
+    low = max(PROBATION_DELETE_SCORE, PROBATION_DELETE_SCORE_LOW)
+    if DISK_PLENTY_GB <= DISK_LOW_GB or free >= DISK_PLENTY_GB:
+        bar = plenty if free >= DISK_PLENTY_GB else low
+    elif free <= DISK_LOW_GB:
+        bar = low
+    else:
+        filled = (DISK_PLENTY_GB - free) / (DISK_PLENTY_GB - DISK_LOW_GB)
+        bar = plenty + (low - plenty) * filled
+    return min(round(bar, 3), GRADUATION_SCORE)
 
 
 # -- deleting -----------------------------------------------------------------
@@ -253,11 +276,16 @@ def review(section, when: str, dry_run: bool = False) -> Dict[str, List[str]]:
         return True
 
     if can_delete and when == "end":
+        free = free_gb(root)
+        bar = probation_bar(free)
+        logger.info(f"Probation bar {bar:.2f} with {free:.0f} GB free "
+                    f"({PROBATION_DELETE_SCORE} at {DISK_PLENTY_GB:.0f} GB or more, "
+                    f"{PROBATION_DELETE_SCORE_LOW} at {DISK_LOW_GB:.0f} GB)")
         for path, since in probation:
             if path in done["graduated"] or path in done["kept_by_lidarr"] or since >= started:
                 continue
-            if path in by_path and score_of(path) < PROBATION_DELETE_SCORE:
-                remove(path, f"Probation over, score {score_of(path):.2f} < {PROBATION_DELETE_SCORE}",
+            if path in by_path and score_of(path) < bar:
+                remove(path, f"Probation over, score {score_of(path):.2f} < {bar:.2f} ({free:.0f} GB free)",
                        "probation_deleted")
 
     if can_delete and free_gb(root) < DISK_LOW_GB:

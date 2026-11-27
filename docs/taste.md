@@ -29,7 +29,9 @@ title.
 **How much they like each artist** comes from that artist's songs: the loved
 ones add, the disliked ones take off half as much. An artist with many loved
 songs and a few rated low is still a favourite. **Favourites** are ordered
-by that and by how much they were played lately.
+by that and by how much they were played lately. The first
+`TOP_ARTIST_LIMIT` (5) are the artists Lidarr follows for the user; the list
+is redone in each download cycle.
 
 **Seeds** are the loved songs, the ones loved lately first, at most two per
 artist (`TASTE_SEEDS`).
