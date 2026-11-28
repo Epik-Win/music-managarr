@@ -129,7 +129,8 @@ def review_env(library, tmp_path, monkeypatch):
     for user in ('ann', 'bob'):
         (data / user).mkdir(parents=True)
         conn = sqlite3.connect(data / user / 'music_ai.db')
-        conn.execute('CREATE TABLE track_scores (track_id TEXT PRIMARY KEY, title TEXT, artist TEXT, score REAL, rating INTEGER)')
+        conn.execute('CREATE TABLE track_scores (track_id TEXT PRIMARY KEY, title TEXT, artist TEXT, score REAL, '
+                     'rating INTEGER, view_count INTEGER, skip_count INTEGER, last_played INTEGER)')
         conn.execute('CREATE TABLE blacklist (id INTEGER PRIMARY KEY, user_id TEXT, title TEXT, artist TEXT, '
                      'reason TEXT, rating REAL, UNIQUE(user_id, title, artist))')
         conn.execute('CREATE TABLE deletions (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT, artist TEXT, '
@@ -142,14 +143,20 @@ def review_env(library, tmp_path, monkeypatch):
     monkeypatch.setattr(library_review, 'free_gb', lambda path: 100.0)
     tracks = {}
 
-    def add(rel, scores=(), probation_since=None, added=None):
+    def add(rel, scores=(), probation_since=None, added=None, skips=(), ratings=()):
+        """A song with each user's score; a score above 0 means they played it,
+        and `skips` / `ratings` (per user) add skips and Plex ratings (0–10)."""
         path = _song(albums, rel)
         key = f'/library/metadata/{len(tracks) + 1}'
         added_at = datetime.fromtimestamp(added if added is not None else time.time() - 90 * 86400)
         tracks[path] = SimpleNamespace(key=key, addedAt=added_at)
-        for user, score in zip(('ann', 'bob'), scores):
+        for i, (user, score) in enumerate(zip(('ann', 'bob'), scores)):
+            skip = skips[i] if i < len(skips) else 0
+            rating = ratings[i] if i < len(ratings) else 0
             conn = sqlite3.connect(data / user / 'music_ai.db')
-            conn.execute('INSERT INTO track_scores (track_id, score) VALUES (?, ?)', (key, score))
+            conn.execute('INSERT INTO track_scores (track_id, score, view_count, skip_count, rating, last_played) '
+                         'VALUES (?, ?, ?, ?, ?, ?)', (key, score, 1 if score > 0 else 0, skip, rating,
+                                                       int(time.time()) if score > 0 else 0))
             conn.commit()
             conn.close()
         if probation_since is not None:
@@ -173,18 +180,55 @@ def test_a_probationary_song_any_user_loves_graduates(review_env):
 
 
 def test_probation_ends_after_a_whole_pass(review_env):
-    """A song from an earlier pass nobody plays goes; one from the pass that
-    just ran waits for the next review."""
+    """A song from an earlier pass its listeners judge low goes; one from the
+    pass that just ran waits for the next review."""
     review, section, add, data = review_env
-    unplayed = add('A/B/unplayed.mp3', scores=(0.0, 0.05), probation_since=time.time() - 40 * 86400)
-    Path(unplayed).with_suffix('.lrc').write_text('x')
+    judged_low = add('A/B/judged_low.mp3', scores=(0.0, 0.05), probation_since=time.time() - 40 * 86400,
+                     skips=(0, 4))
+    Path(judged_low).with_suffix('.lrc').write_text('x')
     played = add('A/B/played.mp3', scores=(0.3, 0.0), probation_since=time.time() - 40 * 86400)
-    fresh = add('A/C/fresh.mp3', scores=(0.0,), probation_since=time.time() - 60, added=time.time() - 60)
+    fresh = add('A/C/fresh.mp3', scores=(0.0,), probation_since=time.time() - 60, added=time.time() - 60,
+                skips=(1,))
     review.review(section, 'end')
-    assert not os.path.exists(unplayed) and not os.path.exists(Path(unplayed).with_suffix('.lrc'))
-    assert _blacklisted(data, 'ann') == ['unplayed'] and _blacklisted(data, 'bob') == ['unplayed']
+    assert not os.path.exists(judged_low) and not os.path.exists(Path(judged_low).with_suffix('.lrc'))
+    assert _blacklisted(data, 'ann') == ['judged_low'] and _blacklisted(data, 'bob') == ['judged_low']
     assert library_state.state_of(played) == library_state.PROBATION
     assert library_state.state_of(fresh) == library_state.PROBATION and os.path.exists(fresh)
+
+
+def test_a_song_nobody_played_skipped_or_rated_is_not_judged(review_env, monkeypatch):
+    """No play, skip or rating says nothing about anyone's taste: the song
+    stays on probation, with plenty of space or not."""
+    review, section, add, _data = review_env
+    unheard = add('A/B/unheard.mp3', scores=(0.0, 0.0), probation_since=time.time() - 40 * 86400)
+    done = review.review(section, 'end')
+    assert done['not_heard_yet'] == [unheard] and done['probation_deleted'] == []
+    monkeypatch.setattr(review, 'free_gb', lambda path: 30.0)  # higher bar, still no space sweep
+    review.review(section, 'end')
+    assert os.path.exists(unheard) and library_state.state_of(unheard) == library_state.PROBATION
+
+
+def test_skips_and_ratings_judge_a_song(review_env):
+    """Skipped without ever being played to the end, or rated 1★: judged low
+    and deleted. Rated 4★: graduates whatever its plays."""
+    review, section, add, _data = review_env
+    old = time.time() - 40 * 86400
+    skipped = add('A/B/skipped.mp3', scores=(0.0,), probation_since=old, skips=(2,))
+    one_star = add('A/B/one_star.mp3', scores=(0.34,), probation_since=old, ratings=(2,))
+    four_stars = add('A/B/four_stars.mp3', scores=(0.0, 0.2), probation_since=old, ratings=(0, 8))
+    done = review.review(section, 'end')
+    assert sorted(done['probation_deleted']) == sorted([skipped, one_star])
+    assert done['graduated'] == [four_stars] and library_state.state_of(four_stars) is None
+
+
+def test_a_listeners_judgment():
+    import library_review as review
+    assert review.judgment(0.0, 0, 0, 0, 0) is None                    # never heard
+    assert review.judgment(0.0, 0, 3, 0, 0) == 0.0                     # skipped only
+    assert review.judgment(0.34, 1, 0, 2, 1) == 0.0                    # 1★
+    assert review.judgment(0.36, 1, 0, 4, 1) == 0.1                    # 2★
+    assert review.judgment(0.42, 1, 0, 6, 1) == 0.42                   # 3★: the score
+    assert review.judgment(0.2, 1, 0, 8, 1) == review.GRADUATION_SCORE  # 4★
 
 
 def test_the_pass_start_review_never_ends_probation(review_env):
@@ -240,7 +284,7 @@ def test_a_filling_disk_ends_probation_for_songs_plenty_of_space_keeps(review_en
 
 def test_nothing_is_deleted_without_lidarr_or_with_auto_delete_off(review_env, monkeypatch):
     review, section, add, _data = review_env
-    old = add('A/B/old.mp3', scores=(0.0,), probation_since=time.time() - 40 * 86400)
+    old = add('A/B/old.mp3', scores=(0.0,), probation_since=time.time() - 40 * 86400, skips=(3,))
     monkeypatch.setattr(review, 'lidarr_kept_paths', lambda: None)
     review.review(section, 'end')
     assert os.path.exists(old)

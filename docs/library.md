@@ -60,16 +60,25 @@ nobody else plays it. This score decides what stays; which songs are picked
 for a user comes from their taste ([taste.md](taste.md)), where recent plays
 count most.
 
+**Judged only on what listeners did.** The review judges a song only by the
+users who played it, skipped it (stopped before the end) or rated it. A song
+nobody has played, skipped or rated has said nothing about anyone's taste: it
+is neither graduated nor deleted for its score, and stays on probation until
+someone hears it. For a listener, a rating speaks louder than the score: 1★
+judges it 0, 2★ at most 0.1, 4★ or more at least `GRADUATION_SCORE`. A song
+skipped and never played to the end is judged 0.
+
 **Reviewed, once per full pass.** A pass is one download cycle for every
 user in turn (`SCAN_INTERVAL`). When the last user's cycle is done, the
 manager runs `library_review.py` (`--when end`), when every user's scores
 are fresh:
 
-1. **Graduation.** A probationary song scoring `GRADUATION_SCORE` (0.55) or
-   more leaves probation: it stays for good.
+1. **Graduation.** A probationary song judged `GRADUATION_SCORE` (0.55) or
+   more by a listener (or rated 4★) leaves probation: it stays for good.
 2. **End of probation.** A probationary song that has been in the library
-   for a whole pass (downloaded before the pass that just ran) and scores
-   below the **probation bar** is deleted. The bar follows the free space:
+   for a whole pass (downloaded before the pass that just ran), that someone
+   has heard, and that every listener judges below the **probation bar** is
+   deleted. The bar follows the free space:
    with `DISK_PLENTY_GB` (100) or more free it is `PROBATION_DELETE_SCORE`
    (0.15), so only songs nobody took to are deleted; as free space falls to
    `DISK_LOW_GB` (10) it rises evenly to `PROBATION_DELETE_SCORE_LOW` (0.45),
@@ -82,9 +91,9 @@ are fresh:
    deleted until `DISK_TARGET_GB` (20) is free, at most `DISK_DELETE_MAX`
    (250) per review:
    - songs on the soon-to-go list first, oldest first;
-   - then every other song, lowest score first, where a probationary song's
-     score counts `PROBATION_PENALTY` (0.3) lower, so it goes before a
-     permanent song that scores the same.
+   - then every other song, lowest judgment first (0 for a song nobody has
+     heard), where a probationary song's counts `PROBATION_PENALTY` (0.3)
+     lower, so it goes before a permanent song judged the same.
 
    The review also runs when a pass starts (`--when start`), for disk space
    only, so a full disk is cleared before new downloads.

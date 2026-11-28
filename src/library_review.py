@@ -6,27 +6,36 @@ The manager runs this review after every user's cycle of a pass has
 refreshed that user's scores (`--when end`), and before a pass's downloads
 if the disk is already low (`--when start`):
 
-1. **Graduation** — a probationary song whose score reaches GRADUATION_SCORE
-   for any user leaves probation and stays for good.
+A song is judged only on what its listeners did with it: played it, skipped
+it (did not listen to the end) or rated it. A song nobody has played, skipped
+or rated has told nothing about anyone's taste, so the review neither
+graduates nor deletes it for its score; it stays on probation until someone
+hears it. A listener's judgment is their score, except that a rating speaks
+louder: 1★ counts 0, 2★ at most 0.1 and 4★ or more at least
+GRADUATION_SCORE.
+
+1. **Graduation** — a probationary song whose judgment reaches
+   GRADUATION_SCORE for any user leaves probation and stays for good.
 2. **Probation review** (end of a pass) — a probationary song that has been
-   in the library for a whole pass and still scores below the probation bar
-   for every user is deleted. The bar follows the free space: with
-   DISK_PLENTY_GB or more free it is PROBATION_DELETE_SCORE (only songs
-   nobody took to are deleted), and it rises evenly to PROBATION_DELETE_SCORE_LOW as
-   free space falls to DISK_LOW_GB, so a filling disk keeps fewer
-   probationary songs. Songs downloaded in the pass that just ran wait for
-   the next one, so everyone gets a full cycle to listen to them.
+   in the library for a whole pass, that someone has heard, and that every
+   listener judges below the probation bar is deleted. The bar follows the
+   free space: with DISK_PLENTY_GB or more free it is PROBATION_DELETE_SCORE
+   (only songs nobody took to are deleted), and it rises evenly to
+   PROBATION_DELETE_SCORE_LOW as free space falls to DISK_LOW_GB, so a
+   filling disk keeps fewer probationary songs. Songs downloaded in the pass
+   that just ran wait for the next one, so everyone gets a full cycle to
+   listen to them.
 3. **Disk space** — when free space is below DISK_LOW_GB, songs are deleted
    until DISK_TARGET_GB is free: soon-to-go songs first, then every other
-   song by score, a probationary song's score lowered by PROBATION_PENALTY
-   so it goes before a permanent song that scores the same. At most
-   DISK_DELETE_MAX songs go per review, since other data on the same disk
-   can fill it and the library should not pay for all of it.
+   song by judgment (0 for a song nobody heard), a probationary song's
+   lowered by PROBATION_PENALTY so it goes before a permanent song judged the
+   same. At most DISK_DELETE_MAX songs go per review, since other data on the
+   same disk can fill it and the library should not pay for all of it.
 
-Scores are taken per user (each user's own database) and the best one
+Judgments are taken per user (each user's own database) and the best one
 counts: a song one user loves stays even if the others never play it.
 Never deleted: songs Lidarr keeps (files of albums it monitors — it would
-download them again), songs scoring GRADUATION_SCORE or more, and songs
+download them again), songs judged GRADUATION_SCORE or more, and songs
 Plex does not know yet. Every deleted song is blacklisted for every user so
 no cycle downloads it again. Nothing is deleted while ENABLE_AUTO_DELETE is
 off, or while Lidarr cannot say which songs it keeps.
@@ -78,16 +87,39 @@ def user_databases() -> Dict[str, str]:
             for p in sorted(glob.glob(os.path.join(DATA_DIR, "*", "music_ai.db")))}
 
 
+def judgment(score: Optional[float], plays: Optional[int], skips: Optional[int], rating: Optional[float],
+             last_played: Optional[int]) -> Optional[float]:
+    """One listener's judgment of a song, from 0 to 1, or None when they
+    never played, skipped or rated it. Plex ratings are 0–10 (2 = 1★)."""
+    plays, skips, rating, last_played = plays or 0, skips or 0, rating or 0, last_played or 0
+    if not (plays > 0 or skips > 0 or rating > 0 or last_played > 0):
+        return None
+    value = float(score or 0.0)
+    if 0 < rating <= 2:
+        return 0.0
+    if 0 < rating <= 4:
+        return min(value, 0.1)
+    if rating >= 8:
+        return max(value, GRADUATION_SCORE)
+    return value
+
+
 def best_scores(keys: Iterable[str], databases: Dict[str, str]) -> Dict[str, float]:
-    """{Plex track key: the best score any user gives it}."""
+    """{Plex track key: the best judgment any listener gives it}. A song
+    nobody played, skipped or rated is missing: there is nothing to judge it on."""
     wanted = set(keys)
     best: Dict[str, float] = {}
     for db in databases.values():
         try:
             conn = sqlite3.connect(db)
-            for key, score in conn.execute("SELECT track_id, score FROM track_scores"):
-                if key in wanted and score is not None and score > best.get(key, -1):
-                    best[key] = float(score)
+            rows = conn.execute("SELECT track_id, score, view_count, skip_count, rating, last_played "
+                                "FROM track_scores")
+            for key, score, plays, skips, rating, last_played in rows:
+                if key not in wanted:
+                    continue
+                value = judgment(score, plays, skips, rating, last_played)
+                if value is not None and value > best.get(key, -1):
+                    best[key] = value
             conn.close()
         except sqlite3.Error as exc:
             logger.warning(f"Could not read scores from {db}: {exc}")
@@ -235,8 +267,10 @@ def review(section, when: str, dry_run: bool = False) -> Dict[str, List[str]]:
     by_path = plex_tracks_by_path(section)
     scores = best_scores((t.key for t in by_path.values()), databases)
     score_of = lambda path: scores.get(by_path[path].key, 0.0) if path in by_path else 0.0
+    heard = lambda path: path in by_path and by_path[path].key in scores
     started = pass_started()
-    done: Dict[str, List[str]] = {"graduated": [], "probation_deleted": [], "space_deleted": [], "kept_by_lidarr": []}
+    done: Dict[str, List[str]] = {"graduated": [], "probation_deleted": [], "space_deleted": [], "kept_by_lidarr": [],
+                                  "not_heard_yet": []}
     rel = lambda p: os.path.relpath(p, root)
 
     kept = lidarr_kept_paths()
@@ -245,7 +279,7 @@ def review(section, when: str, dry_run: bool = False) -> Dict[str, List[str]]:
     for path, _since in probation:
         if score_of(path) >= GRADUATION_SCORE:
             done["graduated"].append(path)
-            logger.info(f"🎓 Graduated (score {score_of(path):.2f}): {rel(path)}")
+            logger.info(f"🎓 Graduated (judged {score_of(path):.2f}): {rel(path)}")
             if not dry_run:
                 library_state.unmark(path, library_state.PROBATION)
         elif kept and path in kept:
@@ -284,8 +318,12 @@ def review(section, when: str, dry_run: bool = False) -> Dict[str, List[str]]:
         for path, since in probation:
             if path in done["graduated"] or path in done["kept_by_lidarr"] or since >= started:
                 continue
-            if path in by_path and score_of(path) < bar:
-                remove(path, f"Probation over, score {score_of(path):.2f} < {bar:.2f} ({free:.0f} GB free)",
+            if path not in by_path:
+                continue
+            if not heard(path):
+                done["not_heard_yet"].append(path)      # nobody played, skipped or rated it
+            elif score_of(path) < bar:
+                remove(path, f"Probation over, judged {score_of(path):.2f} < {bar:.2f} ({free:.0f} GB free)",
                        "probation_deleted")
 
     if can_delete and free_gb(root) < DISK_LOW_GB:
@@ -314,7 +352,7 @@ def review(section, when: str, dry_run: bool = False) -> Dict[str, List[str]]:
             if missing <= 0:
                 break
             size = os.path.getsize(path)
-            if remove(path, f"Disk space low, score {effective:.2f}", "space_deleted"):
+            if remove(path, f"Disk space low, judged {effective:.2f}", "space_deleted"):
                 missing -= size
 
     if not dry_run and (done["probation_deleted"] or done["space_deleted"]):
