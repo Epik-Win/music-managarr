@@ -139,6 +139,7 @@ bot says so privately.
 |---|---|
 | `/request link:<url>` | Request a song, album or playlist (handled in your thread). |
 | `/library_status` | How many songs the library has, how many are on probation and soon to go, and your recent requests. |
+| `/ai_playlist description:<words> [songs]` | A playlist made from your description ("calm piano for studying", "2000s hip hop road trip", "Arabic party songs"), on your own Plex account, so it shows in Plex and Plexamp. Only songs the library has, never ones you rated 1★; asking again with the same words replaces it. See [AI playlists](#ai-playlists). |
 | `/clean_library [preview]` | Admin only: tidy the shared library in the background (`album_artist_merger.py`, every pass): one folder per artist and per album, Lidarr's names winning (Lidarr moves its own files), loose files filed, albums matched to Lidarr's, duplicate songs — the same recording by sound — moved to the quarantine folder, Plex's split albums joined. Band names are never split ("Earth, Wind & Fire"), different albums are never joined ("The Blueprint 3"), and nothing is deleted outright. `preview:True` only reports what would change. Reports in your thread. |
 | `/one_star_delete [on\|off]` | Admin only: whether the admin's one-star rating in Plex deletes the song. Only ratings given after it is switched on count; songs rated one star while it was off stay. Without a choice, shows the setting. |
 
@@ -146,6 +147,37 @@ The admin commands are hidden from members without the **Manage Server**
 permission. The server owner always sees them and always counts as admin. If
 the admin in `DISCORD_TO_PLEX_MAPPING_ADMIN` isn't the owner, give them Manage
 Server, or allow the commands for them under *Server Settings → Integrations*.
+
+## AI playlists
+
+`/ai_playlist` (`ai_playlist.py`) has the local AI fill a playlist from the
+library, never from its own memory of songs:
+
+1. It reads the description into filters: the years asked for ("2000s" is
+   2000–2009) and the countries it is about, chosen from the countries of the
+   library's artists, or a language. The code keeps the songs of albums from
+   those years, and the artists of those countries or, for a language with its
+   own script (Arabic, Korean, Russian …), the artists whose names or titles
+   are written in it.
+2. From what is left it chooses the artists, by number, from a list with their
+   genres and countries, the ones the asker plays most first.
+3. It chooses the songs, by number, from those artists' song lists (with their
+   albums' years), in playing order; one artist takes at most a third of a mixed
+   playlist, and a short first answer gets one more round.
+
+Every number is checked against the lists. When too few songs fit, the reply
+says how many it found; when none do, nothing is made. The title is
+`AI_PLAYLIST_PREFIX` and the description.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AI_PLAYLIST_API_KEY` | `LOCAL_AI_API_KEY` | Key for these requests. Their lists are long (about 20,000 tokens for 1,200 artists), so the model needs a large context; with LiteLLM, a key of its own lets a hook send them to a large model. |
+| `AI_PLAYLIST_MODEL` | `LOCAL_AI_MODEL` | Model to ask. |
+| `AI_PLAYLIST_SONGS` / `AI_PLAYLIST_MAX_SONGS` | `25` / `50` | Songs when none are asked for / at most. |
+| `AI_PLAYLIST_ARTISTS` | `12` | Most artists the songs are chosen from. |
+| `AI_PLAYLIST_ARTIST_SONGS` | `60` | Songs listed per chosen artist. |
+| `AI_PLAYLIST_PREFIX` | `AI: ` | Start of the playlists' titles. |
+| `AI_PLAYLIST_TIMEOUT` | `300` | Seconds one AI answer may take. |
 
 ## Settings
 

@@ -31,10 +31,16 @@ going through a Mullvad VPN tunnel inside the container.
 - **Picked for You.** Every day each user gets library songs they haven't
   heard yet that sound like the ones they love (Plex's sonic analysis), in a
   playlist on their own account.
+- **AI playlists.** `/ai_playlist` in Discord: describe a playlist in your
+  own words and the local AI fills it from the library's own songs, on your
+  Plex account (so it shows in Plexamp). See
+  [docs/discord.md](docs/discord.md#ai-playlists).
 - **A library that cleans itself.** Songs MusicAI picks on its own start on
-  probation. A song someone loves graduates; one nobody plays by the end of
-  the next cycle is deleted; when the disk runs low, the least-liked songs go
-  first. Songs two users dislike are deleted first. See
+  probation, judged only on what listeners did with them: plays, skips and
+  ratings. A song someone loves graduates; one its listeners skipped or rated
+  low is deleted after a full cycle, and the fuller the disk, the more a song
+  has to be liked to stay; a song nobody has heard yet waits. When the disk
+  runs low, songs two users dislike go first, then the least liked. See
   [docs/library.md](docs/library.md).
 - **Requests over Discord**, each user in their own private thread, with the
   channel itself showing only the download-cycle status. When the local AI
@@ -77,6 +83,7 @@ going through a Mullvad VPN tunnel inside the container.
 | Cycle worker | `app.py cycle-once` | One short-lived process per user, in turn: a full analysis and download cycle with that user's token and database. |
 | Library review | `library_review.py` | After every user's cycle of a pass: graduation, end of probation, disk space. |
 | Discord bot | `discord_bot.py` | Requests, slash commands, the cycle-status message, admin notices. |
+| AI playlists | `ai_playlist.py` | `/ai_playlist`: filters read by the AI, then artists and songs chosen by number from the library's lists. |
 | Metadata daemon | `fix_metadata_daemon.py` | Daily: the admin's Delete playlist, Fix Metadata playlists, library repair, Manual Fix, album reconcile, Picked for You, lyrics files; moved songs back in their playlists. |
 | One-star watcher | `one_star_watcher.py` | While switched on, deletes songs the admin rates exactly one star. |
 | ARL page | `arl_server.py` | Renews the Deezer login; listens only while it has expired. |

@@ -3099,6 +3099,42 @@ async def request_command(interaction: discord.Interaction, link: str):
                           _ThreadReply(thread), requested=True)
 
 
+@bot.tree.command(name="ai_playlist", description="Describe a playlist in your own words: the local AI fills it from the library")
+@app_commands.describe(description="What it should be, e.g. 'calm piano for studying' or '2000s hip hop road trip'",
+                       songs="How many songs (25 if left out)")
+async def ai_playlist_command(interaction: discord.Interaction, description: str, songs: Optional[int] = None):
+    """A playlist on the asker's own Plex account, filled by the local AI
+    from the library's own songs (ai_playlist.py)."""
+    import ai_playlist
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    plex_user = DISCORD_TO_PLEX_MAPPING.get(interaction.user.name.lower())
+    plex_url = os.environ.get('PLEX_URL', '').strip()
+    if not plex_user or not plex_url:
+        await interaction.followup.send("❌ Your Discord account isn't set up in the music system; please ask the admin.",
+                                        ephemeral=True)
+        return
+    logger.info(f"🎧 /ai_playlist from {interaction.user.name} ({plex_user}): {description!r}")
+
+    def build():
+        server = requester_server(plex_url, plex_user)
+        section = find_music_section(server) if server is not None else None
+        if section is None:
+            return {'ok': False, 'songs': [], 'message': "I couldn't reach your Plex library; please try again later."}
+        return ai_playlist.make(server, section, description, songs)
+
+    try:
+        result = await asyncio.to_thread(build)
+    except Exception as exc:
+        logger.warning(f"/ai_playlist failed for {plex_user}: {exc}")
+        result = {'ok': False, 'songs': [], 'message': "Something went wrong making the playlist; please try again."}
+    text = ("🎧 " if result['ok'] else "⚠️ ") + result['message']
+    if result['songs']:
+        listed = [f"{i}. {artist} — {title}" for i, (artist, title) in enumerate(result['songs'][:10], 1)]
+        more = len(result['songs']) - len(listed)
+        text += "\n\n" + "\n".join(listed) + (f"\n…and {more} more" if more > 0 else '')
+    await interaction.followup.send(text[:1990], ephemeral=True)
+
+
 @bot.tree.command(name="library_status", description="Check library status for your Plex account")
 async def library_status(interaction: discord.Interaction):
     """Show library statistics for the requesting user's Plex account."""

@@ -44,6 +44,7 @@ services:
       - LOCAL_AI_API_BASE=${LOCAL_AI_API_BASE:?Set a reachable OpenAI-compatible /v1 URL}
       - LOCAL_AI_API_KEY=${LOCAL_AI_API_KEY:-}
       - LOCAL_AI_MODEL=${LOCAL_AI_MODEL:?Set the model to ask}
+      - AI_PLAYLIST_API_KEY=${AI_PLAYLIST_API_KEY:-}    # optional: /ai_playlist's own key (long requests)
 
       # Cycle
       - SCAN_INTERVAL=604800                     # one pass a week

@@ -10,7 +10,7 @@ in `.env` (see `.env.example`); `docker-compose.example.yml` passes them in.
 | `PLEX_URL` | Plex server, e.g. `http://192.168.1.10:32400`. |
 | `PLEX_TOKEN` | The server owner's token (Plex Home users' tokens are derived from it). |
 | `WIZARR_MAPPING_FILE` | The user mapping, `{"discord_handle": "plex_username"}` (default `/data/wizarr/plex_invite_targets.json`). |
-| `LOCAL_AI_API_BASE`, `LOCAL_AI_MODEL` | An OpenAI-compatible endpoint (`…/v1`: LiteLLM, llama.cpp, vLLM, Ollama …) and the model to ask; `LOCAL_AI_API_KEY` is its key, if it needs one. |
+| `LOCAL_AI_API_BASE`, `LOCAL_AI_MODEL` | An OpenAI-compatible endpoint (`…/v1`: LiteLLM, llama.cpp, vLLM, Ollama …) and the model to ask; `LOCAL_AI_API_KEY` is its key, if it needs one. `/ai_playlist` can use a key and model of its own ([discord.md](discord.md#ai-playlists)). |
 | `MULLVAD_ACCOUNT_NUMBER`, `MULLVAD_DAEMON_ENABLED=1` | The VPN, required while `VPN_REQUIRED=true`. |
 | `MUSIC_BASE_DIR`, `DATA_DIR` | Container paths of the music folder and the state (`/music`, `/app/data`). |
 | `HOST_MUSIC_BASE_PATH` | The host folder that contains `music/`, as Plex sees it (e.g. `/srv/media`); unset, Plex is assumed to see `/music` too. |
