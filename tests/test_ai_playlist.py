@@ -158,3 +158,61 @@ def test_a_request_nothing_in_the_library_fits_says_so(library, monkeypatch):
     server = FakeServer()
     result = ai_playlist.make(server, library, '60s soul', 10)
     assert not result['ok'] and 'no songs that fit' in result['message'] and server.saved == []
+
+
+def test_a_theme_offers_the_songs_titled_on_it_and_keeps_those_the_ai_confirms(monkeypatch):
+    tracks = [_track('Folk Singer', 'Silent Night', album='A Folk Christmas'),
+              _track('Folk Singer', 'Snow Carol', album='A Folk Christmas'),
+              _track('Folk Singer', 'Spring Song', album='Seasons'),
+              _track('Crooner', 'Let It Snow', album='Standards'),
+              _track('Rapper', 'Santa Freestyle', album='Mixtape'),
+              _track('Rapper', 'Other Track', album='Mixtape')]
+    section = FakeSection(tracks, {'Folk Singer': ['Folk'], 'Crooner': ['Vocal'], 'Rapper': ['Hip Hop']})
+    asked = []
+
+    def fake_ask(system, prompt, **kw):
+        asked.append(prompt)
+        if 'Read the request' in prompt:
+            return {'from_year': None, 'to_year': None, 'countries': [], 'language': None,
+                    'words': ['christmas', 'snow', 'santa', 'x']}          # 'x' is too short to count
+        assert 'Which of them really are' in prompt
+        return {'songs': _listed(prompt, ['Silent Night', 'Snow Carol', 'Let It Snow'])}
+
+    monkeypatch.setattr(ai_playlist, 'ask', fake_ask)
+    server = FakeServer()
+    result = ai_playlist.make(server, section, 'Christmas', 10)
+    offered = asked[1]
+    assert 'Silent Night' in offered and 'Let It Snow' in offered and 'Santa Freestyle' in offered
+    assert 'Spring Song' not in offered and 'Other Track' not in offered
+    assert '[Hip Hop]' in offered                                         # the artist's genres help it judge
+    # The artists take turns: the crooner's one song comes second, not after the album.
+    assert result['songs'] == [('Folk Singer', 'Silent Night'), ('Crooner', 'Let It Snow'),
+                               ('Folk Singer', 'Snow Carol')]
+
+
+def test_too_few_songs_on_the_theme_falls_back_to_choosing_artists(library, monkeypatch):
+    def fake_ask(system, prompt, **kw):
+        if 'Read the request' in prompt:
+            return {'words': ['unicorn']}
+        if 'Reply {"artists"' in prompt:
+            return {'artists': _listed(prompt, ['Calm Pianist'])}
+        return {'songs': _listed(prompt, ['Nocturne 1', 'Nocturne 2', 'Nocturne 3'])}
+    monkeypatch.setattr(ai_playlist, 'ask', fake_ask)
+    assert ai_playlist.make(FakeServer(), library, 'unicorn piano', 10)['ok']
+
+
+def test_artists_take_turns_and_none_takes_more_than_a_third():
+    songs = [_track('A', f'a{i}') for i in range(6)] + [_track('B', 'b0'), _track('C', 'c0'), _track('C', 'c1')]
+    order = [t.title for t in ai_playlist.arranged(songs, 9)]
+    assert order == ['a0', 'b0', 'c0', 'a1', 'c1', 'a2']
+
+
+def test_every_answer_is_kept_short(monkeypatch):
+    monkeypatch.setenv('LOCAL_AI_API_BASE', 'http://ai/v1')
+    monkeypatch.setenv('LOCAL_AI_MODEL', 'm')
+    sent = {}
+    monkeypatch.setattr(ai_playlist.requests, 'post', lambda url, headers=None, json=None, timeout=None: (
+        sent.update(json) or SimpleNamespace(raise_for_status=lambda: None,
+                                             json=lambda: {'choices': [{'message': {'content': '{}'}}]})))
+    ai_playlist.ask('s', 'p')
+    assert sent['max_tokens'] == ai_playlist.MAX_ANSWER_TOKENS

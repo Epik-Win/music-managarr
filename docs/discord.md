@@ -159,11 +159,23 @@ library, never from its own memory of songs:
    those years, and the artists of those countries or, for a language with its
    own script (Arabic, Korean, Russian …), the artists whose names or titles
    are written in it.
+   For a theme, holiday or occasion ("Christmas", "Halloween", "a wedding") it
+   also gives the words its songs and albums are titled with. Every song of
+   the library whose title or album has one is offered, and the AI says which
+   really are for the playlist (a rap song that mentions Santa is not a
+   Christmas song): one yes or no each, which a model answers steadily. Step
+   2 and 3 are only taken when too few songs come out of this.
 2. From what is left it chooses the artists, by number, from a list with their
    genres and countries, the ones the asker plays most first.
 3. It chooses the songs, by number, from those artists' song lists (with their
-   albums' years), in playing order; one artist takes at most a third of a mixed
-   playlist, and a short first answer gets one more round.
+   albums' years and the artists' genres); a short first answer gets one more
+   round.
+
+The code puts the songs in playing order: one artist takes at most a third of
+a mixed playlist, and the artists take turns, each once a round, so a few big
+albums don't crowd out the artists with one fitting song. Every answer is
+kept short (`AI_PLAYLIST_MAX_TOKENS`): a model that starts repeating itself
+would otherwise hold the AI server for everyone until it ran out of room.
 
 Every number is checked against the lists. When too few songs fit, the reply
 says how many it found; when none do, nothing is made. The title is
@@ -178,6 +190,8 @@ says how many it found; when none do, nothing is made. The title is
 | `AI_PLAYLIST_ARTIST_SONGS` | `60` | Songs listed per chosen artist. |
 | `AI_PLAYLIST_PREFIX` | `AI: ` | Start of the playlists' titles. |
 | `AI_PLAYLIST_TIMEOUT` | `300` | Seconds one AI answer may take. |
+| `AI_PLAYLIST_MAX_TOKENS` | `1000` | Longest answer asked for. |
+| `AI_PLAYLIST_THEME_SONGS` | `400` | Most songs a theme offers the AI. |
 
 ## Settings
 

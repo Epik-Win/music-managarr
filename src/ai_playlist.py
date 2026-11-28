@@ -12,6 +12,11 @@ the wrong artist. So it works from the library's own lists instead:
    the artists whose names or song titles are written in it). A model asked
    for "Arabic" or "the 2000s" from a list of a thousand artists fills the
    playlist with whatever is popular; filtered lists leave it nothing else.
+   For a theme, holiday or occasion ("Christmas", "Halloween", "a wedding")
+   it also gives the words such songs and albums are titled with; the songs
+   whose title or album has one of them, across the whole library, are the
+   ones offered, and step 2 is skipped (a Christmas album hides among any
+   artist's records, and no artist list says "Christmas").
 2. It chooses the artists that fit, by their numbers in the list of those
    artists (with their genres, countries and how many songs they have here).
 3. It chooses the songs, by their numbers in those artists' own song lists,
@@ -55,6 +60,12 @@ TITLE_LENGTH = 60
 DISLIKED_RATING = 2                 # Plex ratings are 0–10: 2 is 1★
 MIN_SONGS = 3
 TIMEOUT = max(30, _env_int('AI_PLAYLIST_TIMEOUT', 300))
+THEME_SONGS_LISTED = max(50, _env_int('AI_PLAYLIST_THEME_SONGS', 400))   # songs a theme offers at most
+# Longest answer asked for: a list of numbers or words is short, and a model
+# that starts repeating itself would otherwise write until it runs out of
+# room, holding the AI server for everyone meanwhile.
+MAX_ANSWER_TOKENS = max(200, _env_int('AI_PLAYLIST_MAX_TOKENS', 1000))
+MAX_WORDS = 30
 
 
 class Artist:
@@ -135,13 +146,24 @@ SCRIPTS = {
 
 
 class Wish:
-    """The filters a request sets: album years, artists' countries, a language."""
+    """The filters a request sets: album years, artists' countries, a language,
+    and for a theme the words its songs' or albums' titles hold."""
 
     def __init__(self, from_year: Optional[int] = None, to_year: Optional[int] = None,
-                 countries: Sequence[str] = (), language: Optional[str] = None):
+                 countries: Sequence[str] = (), language: Optional[str] = None, words: Sequence[str] = ()):
         self.from_year, self.to_year = from_year, to_year
         self.countries = {c.casefold() for c in countries}
         self.language = (language or '').strip().casefold() or None
+        self.words = [w.casefold() for w in words]
+        self._theme = (re.compile('|'.join(rf'(?<!\w){re.escape(w)}(?!\w)' for w in self.words), re.IGNORECASE)
+                       if self.words else None)
+
+    def on_theme(self, track) -> bool:
+        """The song's title or its album's has one of the theme's words."""
+        if self._theme is None:
+            return False
+        return bool(self._theme.search(getattr(track, 'title', '') or '')
+                    or self._theme.search(getattr(track, 'parentTitle', '') or ''))
 
     def year_ok(self, year: Optional[int]) -> bool:
         if self.from_year is None and self.to_year is None:
@@ -167,6 +189,8 @@ class Wish:
             parts.append('from ' + ', '.join(sorted(self.countries)))
         if self.language:
             parts.append(f"in {self.language}")
+        if self.words:
+            parts.append('titled ' + '/'.join(self.words[:8]) + ('…' if len(self.words) > 8 else ''))
         return ', '.join(parts)
 
 
@@ -190,12 +214,23 @@ def read_wish(description: str, countries: Sequence[str]) -> Wish:
         'where that language is mainly spoken, else []. '
         'language: only if it asks for songs in a language, or of a people or culture named after its '
         'language ("Arabic", "French", "Korean"), that language in English, else null. '
-        'Reply {"from_year": null, "to_year": null, "countries": [], "language": null}.'), temperature=0.0)
+        'words: only if it asks for a theme, holiday, season, occasion or topic (Christmas, Halloween, a '
+        'wedding, summer, rain), the words or short phrases songs and albums about it are titled with, in '
+        'English and in the other languages of the countries above, at most 30 (Christmas: christmas, '
+        'xmas, santa, noel, navidad, jingle, sleigh, mistletoe, snow, reindeer …), else []. A genre, mood, '
+        'decade or artist is not a theme. '
+        'Reply {"from_year": null, "to_year": null, "countries": [], "language": null, "words": []}.'),
+        temperature=0.0)
     reply = reply or {}
     known = {c.casefold(): c for c in countries}
     chosen = [known[str(c).casefold()] for c in reply.get('countries') or [] if str(c).casefold() in known]
     language = reply.get('language') if isinstance(reply.get('language'), str) else None
-    return Wish(_year(reply.get('from_year')), _year(reply.get('to_year')), chosen, language)
+    words = []
+    for word in reply.get('words') if isinstance(reply.get('words'), list) else []:
+        word = ' '.join(str(word).split()) if isinstance(word, str) else ''
+        if 3 <= len(word) <= 40 and word.casefold() not in words:
+            words.append(word.casefold())
+    return Wish(_year(reply.get('from_year')), _year(reply.get('to_year')), chosen, language, words[:MAX_WORDS])
 
 
 def narrowed(artists: Sequence[Artist], wish: Wish) -> List[Artist]:
@@ -210,6 +245,23 @@ def narrowed(artists: Sequence[Artist], wish: Wish) -> List[Artist]:
         if kept.tracks:
             out.append(kept)
     return out
+
+
+def themed(artists: Sequence[Artist], wish: Wish) -> List[Artist]:
+    """The artists with only their songs on the request's theme, the most such
+    songs first, at most THEME_SONGS_LISTED songs in all."""
+    out, total = [], 0
+    for artist in artists:
+        on = [t for t in artist.tracks if wish.on_theme(t)]
+        if on:
+            kept = Artist(artist.name, artist.genres, artist.countries)
+            kept.years, kept.tracks = artist.years, on
+            out.append(kept)
+    out.sort(key=lambda a: -len(a.tracks))
+    for artist in out:
+        artist.tracks = artist.tracks[:max(0, THEME_SONGS_LISTED - total)]
+        total += len(artist.tracks)
+    return [a for a in out if a.tracks]
 
 
 # -- the AI ---------------------------------------------------------------------
@@ -231,7 +283,7 @@ def ask(system: str, prompt: str, temperature: float = 0.4) -> Optional[dict]:
         resp = requests.post(
             f'{base}/chat/completions',
             headers={'Authorization': f'Bearer {key}'} if key else {},
-            json={'model': model, 'temperature': temperature,
+            json={'model': model, 'temperature': temperature, 'max_tokens': MAX_ANSWER_TOKENS,
                   'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': prompt}]},
             timeout=TIMEOUT,
         )
@@ -284,11 +336,12 @@ def choose_artists(description: str, artists: Sequence[Artist], size: int) -> Li
     return [artists[n - 1] for n in _numbers((reply or {}).get('artists'), len(artists))][:MAX_ARTISTS]
 
 
-def _song_line(number: int, track, year: Optional[int] = None) -> str:
+def _song_line(number: int, track, year: Optional[int] = None, genres: Sequence[str] = ()) -> str:
     album = getattr(track, 'parentTitle', None) or ''
     year = year or getattr(track, 'parentYear', None) or getattr(track, 'year', None)
     extra = ' · '.join(str(v) for v in (year, album) if v)
-    return f"{number}. {_artist_of(track)} — {track.title}" + (f" ({extra})" if extra else '')
+    return (f"{number}. {_artist_of(track)} — {track.title}" + (f" ({extra})" if extra else '')
+            + (f" [{', '.join(genres[:2])}]" if genres else ''))
 
 
 RULES = ("Respect everything the listener asked: a decade or year (use the years shown, which are the "
@@ -299,12 +352,17 @@ RULES = ("Respect everything the listener asked: a decade or year (use the years
 def choose_songs(description: str, artists: Sequence[Artist], size: int) -> List[object]:
     tracks: List[object] = []
     years: Dict[object, int] = {}
+    genres: Dict[object, List[str]] = {}
     for artist in artists:
-        tracks.extend(artist.tracks[:SONGS_PER_ARTIST_LISTED])
+        listed = artist.tracks[:SONGS_PER_ARTIST_LISTED]
+        tracks.extend(listed)
         years.update(artist.years)
+        genres.update({t.ratingKey: artist.genres for t in listed})
     if not tracks:
         return []
-    listing = '\n'.join(_song_line(i, t, years.get(t.ratingKey)) for i, t in enumerate(tracks, 1))
+    listing = '\n'.join(_song_line(i, t, years.get(t.ratingKey), genres.get(t.ratingKey, ()))
+                         for i, t in enumerate(tracks, 1))
+
     chosen: List[object] = []
     for _round in range(2):          # a second round fills a playlist the first left short
         wanted = size - len(chosen)
@@ -324,6 +382,49 @@ def choose_songs(description: str, artists: Sequence[Artist], size: int) -> List
         if len(chosen) >= size or not picked:
             break
     return chosen[:size]
+
+
+def confirm_theme(description: str, artists: Sequence[Artist]) -> List[object]:
+    """The theme's songs the AI confirms are really about it (a yes or no for
+    each, which a model answers far more steadily than it picks and orders):
+    a title can share a word with the theme and be about something else."""
+    tracks: List[object] = []
+    years: Dict[object, int] = {}
+    genres: Dict[object, List[str]] = {}
+    for artist in artists:
+        tracks.extend(artist.tracks)
+        years.update(artist.years)
+        genres.update({t.ratingKey: artist.genres for t in artist.tracks})
+    if not tracks:
+        return []
+    listing = '\n'.join(_song_line(i, t, years.get(t.ratingKey), genres.get(t.ratingKey, ()))
+                         for i, t in enumerate(tracks, 1))
+    reply = ask(SYSTEM, (
+        f'The listener asked for a playlist: "{description}"\n\n'
+        f'These songs have a word of it in their title or album:\n{listing}\n\n'
+        'Which of them really are songs for this playlist? A song that only shares a word with it is not '
+        '(a rap song that mentions Santa is not a Christmas song, nor is a song about a town called Santa Cruz). '
+        + RULES + 'Reply {"songs": [numbers of the songs that are]}.'), temperature=0.0)
+    return [tracks[n - 1] for n in _numbers((reply or {}).get('songs'), len(tracks))]
+
+
+def arranged(chosen: Sequence[object], size: int) -> List[object]:
+    """The playlist in playing order: at most a third of a mixed playlist by
+    one artist, and the artists taking turns, every one of them once a round
+    (in the order the AI gave them), so a few big albums don't crowd out the
+    artists with one fitting song; each artist's songs keep their order."""
+    queues: Dict[str, List[object]] = {}
+    for t in _capped(list(chosen), size):
+        queues.setdefault(_artist_of(t).casefold(), []).append(t)
+    order: List[object] = []
+    while queues and len(order) < size:
+        for name in list(queues):
+            order.append(queues[name].pop(0))
+            if not queues[name]:
+                del queues[name]
+            if len(order) >= size:
+                break
+    return order
 
 
 def _capped(chosen: List[object], size: int) -> List[object]:
@@ -376,9 +477,17 @@ def make(server, section, description: str, size: Optional[int] = None) -> Dict[
     if not pool:
         return {'ok': False, 'title': title, 'songs': [], 'message': (
             f"The library has no songs that fit that ({wish.describe()}).")}
-    chosen_artists = choose_artists(description, pool, size)
-    logger.info(f"AI playlist '{title}': artists {[a.name for a in chosen_artists]}")
-    songs = choose_songs(description, chosen_artists, size) if chosen_artists else []
+    theme = themed(pool, wish) if wish.words else []
+    songs: List[object] = []
+    if sum(len(a.tracks) for a in theme) >= MIN_SONGS:
+        confirmed = confirm_theme(description, theme)
+        logger.info(f"AI playlist '{title}': {sum(len(a.tracks) for a in theme)} song(s) titled on the theme, "
+                    f"{len(confirmed)} confirmed")
+        songs = arranged(confirmed, size)
+    if len(songs) < MIN_SONGS:
+        chosen_artists = choose_artists(description, pool, size)
+        logger.info(f"AI playlist '{title}': artists {[a.name for a in chosen_artists][:15]}")
+        songs = arranged(choose_songs(description, chosen_artists, size), size) if chosen_artists else []
     if len(songs) < MIN_SONGS:
         return {'ok': False, 'title': title, 'songs': [], 'message': (
             "The local AI couldn't find enough songs in the library for that. "
