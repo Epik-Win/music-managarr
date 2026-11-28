@@ -61,12 +61,16 @@ for a user comes from their taste ([taste.md](taste.md)), where recent plays
 count most.
 
 **Judged only on what listeners did.** The review judges a song only by the
-users who played it, skipped it (stopped before the end) or rated it. A song
-nobody has played, skipped or rated has said nothing about anyone's taste: it
-is neither graduated nor deleted for its score, and stays on probation until
-someone hears it. For a listener, a rating speaks louder than the score: 1★
-judges it 0, 2★ at most 0.1, 4★ or more at least `GRADUATION_SCORE`. A song
-skipped and never played to the end is judged 0.
+users who heard it: played it, skipped it (stopped before the end), rated it
+or keep it in a playlist of their own. A song nobody has heard has said
+nothing about anyone's taste: it is neither graduated nor deleted for its
+score, and stays on probation until someone hears it. A listener's judgment
+is the one their taste profile stores for the song (`liking` in
+[taste.md](taste.md): ratings of the song, its album and its artist, every
+play, how much of it they hear, skips, plays on repeat, their playlists and
+requests), 0 for a song they dislike. A song skipped and never played to the
+end is judged 0; a database whose cycle hasn't stored judgments yet is judged
+from Plex's counts and ratings alone.
 
 **Reviewed, once per full pass.** A pass is one download cycle for every
 user in turn (`SCAN_INTERVAL`). When the last user's cycle is done, the

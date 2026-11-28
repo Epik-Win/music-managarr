@@ -221,6 +221,28 @@ def test_skips_and_ratings_judge_a_song(review_env):
     assert done['graduated'] == [four_stars] and library_state.state_of(four_stars) is None
 
 
+def test_the_judgment_a_users_cycle_stored_is_the_one_used(review_env):
+    """With the taste profile's judgment stored (liking, heard), the review
+    uses it: a song a listener skips through goes, one kept in their playlist
+    graduates, one nobody heard waits, whatever Plex's counts say."""
+    review, section, add, data = review_env
+    old = time.time() - 40 * 86400
+    skipped_through = add('A/B/skipped_through.mp3', scores=(0.3,), probation_since=old)
+    kept = add('A/B/kept.mp3', scores=(0.0,), probation_since=old)
+    waiting = add('A/B/waiting.mp3', scores=(0.0,), probation_since=old)
+    conn = sqlite3.connect(data / 'ann' / 'music_ai.db')
+    conn.execute('ALTER TABLE track_scores ADD COLUMN liking REAL')
+    conn.execute('ALTER TABLE track_scores ADD COLUMN heard INTEGER')
+    for path, liking, heard in ((skipped_through, -0.4, 1), (kept, 0.6, 1), (waiting, 0.0, 0)):
+        key = review.plex_tracks_by_path(section)[path].key
+        conn.execute('UPDATE track_scores SET liking = ?, heard = ? WHERE track_id = ?', (liking, heard, key))
+    conn.commit()
+    conn.close()
+    done = review.review(section, 'end')
+    assert done['probation_deleted'] == [skipped_through]
+    assert done['graduated'] == [kept] and done['not_heard_yet'] == [waiting]
+
+
 def test_a_listeners_judgment():
     import library_review as review
     assert review.judgment(0.0, 0, 0, 0, 0) is None                    # never heard

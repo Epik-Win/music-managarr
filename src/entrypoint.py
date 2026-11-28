@@ -39,6 +39,7 @@ class MultiUserManager:
         self.arl_server_process = None
         self.one_star_process = None
         self.fix_metadata_process = None
+        self.listening_process = None
         # The first entry in the Wizarr mapping file is always treated as the
         # ADMIN / MAIN user. Populated by validate_wizarr_mapping_file().
         self.admin_plex_username = None
@@ -810,6 +811,20 @@ class MultiUserManager:
             logger.error(f"❌ Failed to spawn one-star watcher: {exc}")
             return None
 
+    def spawn_listening_tracker(self):
+        """Background process that records how much of each song every
+        listener hears (listening.py), for their taste."""
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'listening.py')
+        env = os.environ.copy()
+        env.update({"APP_USER_NAME": "listening-tracker", "APP_USER_INDEX": "-1", "PROCESS_ROLE": "listening_tracker"})
+        try:
+            proc = subprocess.Popen([sys.executable, script], env=env, preexec_fn=os.setsid)
+            logger.info(f"🎧 Listening tracker spawned (PID {proc.pid})")
+            return proc
+        except Exception as exc:
+            logger.error(f"❌ Failed to spawn the listening tracker: {exc}")
+            return None
+
     def spawn_fix_metadata_daemon(self):
         """Background process for daily metadata repair, independent of
         SCAN_INTERVAL: each user's Fix Metadata playlist, a library scan for
@@ -856,6 +871,7 @@ class MultiUserManager:
             'arl_server_process': ('ARL server', self.spawn_arl_server_process),
             'one_star_process': ('one-star watcher', self.spawn_one_star_watcher),
             'fix_metadata_process': ('Fix Metadata daemon', self.spawn_fix_metadata_daemon),
+            'listening_process': ('listening tracker', self.spawn_listening_tracker),
         }
         backoff = {attr: 60 for attr in spawners}
         next_try = {attr: 0.0 for attr in spawners}
@@ -976,6 +992,7 @@ class MultiUserManager:
         self.arl_server_process = self.spawn_arl_server_process()
         self.one_star_process = self.spawn_one_star_watcher()
         self.fix_metadata_process = self.spawn_fix_metadata_daemon()
+        self.listening_process = self.spawn_listening_tracker()
         threading.Thread(target=self._supervise_companions, daemon=True).start()
 
         # Initialize Plex libraries for all users
@@ -1112,6 +1129,14 @@ class MultiUserManager:
                     pass
             except Exception as e:
                 logger.error(f"  ❌ Error terminating one-star watcher process: {e}")
+
+        if self.listening_process and self.listening_process.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.listening_process.pid), signal.SIGTERM)
+                self.listening_process.wait(timeout=10)
+                logger.info("  ✓ listening tracker terminated")
+            except Exception as e:
+                logger.error(f"  ❌ Error terminating the listening tracker: {e}")
 
         if self.fix_metadata_process and self.fix_metadata_process.poll() is None:
             try:

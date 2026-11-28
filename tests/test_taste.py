@@ -311,3 +311,106 @@ class TestAccounts:
         admin = SimpleNamespace(history=lambda **kw: rows)
         events = taste.play_events(admin, SimpleNamespace(key=1), {7}, now=NOW)
         assert [e[0] for e in events] == ['5']
+
+
+class TestLiking:
+    """taste.liking: everything known about how the user takes one song."""
+
+    def heard(self, finished=0, partial=0, skipped=0, share=1.0):
+        import listening
+        h = listening.Heard(finished=finished, partial=partial, skipped=skipped)
+        h.fractions = [share] * (finished + partial + skipped)
+        return h
+
+    def test_a_rating_still_speaks_loudest(self):
+        s = song(1, 'A', 'T', plays=9, rating=2)
+        kept = taste.Signals(kept=True, repeats=3, requested=True)
+        assert taste.liking(9, s, kept) == -1.0
+        assert taste.liking(0, song(1, 'A', 'T', rating=8)) >= taste.LOVED
+
+    def test_tracked_early_skips_count_when_plex_saw_fewer(self):
+        s = song(1, 'A', 'T', plays=1, skips=0)
+        assert taste.liking(1, s, taste.Signals(heard=self.heard(finished=1, skipped=3))) < 0
+        assert taste.liking(1, s) > 0
+
+    def test_a_song_usually_left_halfway_is_liked_less(self):
+        s = song(1, 'A', 'T', plays=3)
+        through = taste.liking(3, s, taste.Signals(heard=self.heard(finished=3, share=1.0)))
+        halfway = taste.liking(3, s, taste.Signals(heard=self.heard(partial=3, share=0.5)))
+        assert halfway < through
+
+    def test_partial_listens_count_as_some_listening(self):
+        s = song(1, 'A', 'T')
+        assert taste.liking(0, s, taste.Signals(heard=self.heard(partial=2, share=0.6))) > 0
+
+    def test_a_song_on_repeat_is_liked_more(self):
+        s = song(1, 'A', 'T', plays=2)
+        assert taste.liking(2, s, taste.Signals(repeats=2)) == pytest.approx(taste.liking(2, s) + 0.2)
+
+    def test_album_and_artist_ratings_lean_an_unrated_song(self):
+        s = song(1, 'A', 'T', plays=1)
+        loved_album = taste.Song(**{**s.__dict__, 'album_rating': 10})
+        hated_album = taste.Song(**{**s.__dict__, 'album_rating': 2})
+        assert taste.liking(1, hated_album) < taste.liking(1, s) < taste.liking(1, loved_album)
+        assert taste.liking(1, s, taste.Signals(artist_rating=2)) < taste.liking(1, s)
+
+    def test_kept_in_their_own_playlist_is_loved(self):
+        assert taste.liking(0, song(1, 'A', 'T'), taste.Signals(kept=True)) >= taste.LOVED
+
+    def test_asked_for_holds_until_they_skip_it_more_than_they_play_it(self):
+        assert taste.liking(0, song(1, 'A', 'T'), taste.Signals(requested=True)) == taste.REQUESTED_LIKING
+        skipped = song(1, 'A', 'T', plays=1, skips=4)
+        assert taste.liking(1, skipped, taste.Signals(requested=True)) < 0
+
+    def test_plays_again_within_a_day_are_repeats(self):
+        events = plays(1, 'A', 'T', 10, 10.5, 30) + plays(2, 'B', 'U', 5)
+        assert taste.repeats(events) == {'1': 1}
+
+
+class TestProfileSignals:
+    def test_listens_playlists_requests_and_artist_ratings_reach_the_profile(self):
+        import listening
+        songs = [song(1, 'A', 'Kept'), song(2, 'A', 'Asked'), song(3, 'B', 'Halfway'), song(4, 'C', 'Unheard', ref='c'),
+                 song(5, 'C', 'Rated artist', plays=1, days_ago=1, ref='c')]
+        h = listening.Heard(partial=2, artist='B', title='Halfway')
+        h.fractions = [0.5, 0.5]
+        p = taste.build('ann', songs, now=NOW, listens={'old-key': h}, kept={'1'},
+                        requested=[('A', 'Asked')], artist_ratings={'c': 2})
+        assert p.songs['1'] >= taste.LOVED and '1' in p.heard
+        assert p.songs['2'] == taste.REQUESTED_LIKING and '2' not in p.heard
+        assert p.songs['3'] > 0 and '3' in p.heard            # matched by artist and title (Plex re-added it)
+        assert '4' not in p.heard and p.songs['4'] < 0        # its artist is rated 1★
+        assert p.songs['5'] < taste.liking(1 * taste.decay(1), songs[4])
+
+    def test_only_the_users_own_playlists_count(self):
+        class PL(SimpleNamespace):
+            def items(self):
+                return self.songs
+        server = SimpleNamespace(playlists=lambda: [
+            PL(title='Road trip', playlistType='audio', smart=False, songs=[SimpleNamespace(ratingKey=1)]),
+            PL(title='Soon to go', playlistType='audio', smart=False, songs=[SimpleNamespace(ratingKey=2)]),
+            PL(title='You Might Like', playlistType='audio', smart=False, songs=[SimpleNamespace(ratingKey=3)]),
+            PL(title='AI: calm piano', playlistType='audio', smart=False, songs=[SimpleNamespace(ratingKey=4)]),
+            PL(title='Smart one', playlistType='audio', smart=True, songs=[SimpleNamespace(ratingKey=5)]),
+            PL(title='Videos', playlistType='video', smart=False, songs=[SimpleNamespace(ratingKey=6)])])
+        assert taste.own_playlist_songs(server) == {'1'}
+
+    def test_requests_are_read_for_that_user(self, tmp_path):
+        import json
+        (tmp_path / 'discord_requests.json').write_text(json.dumps({
+            'Ann': [{'artist': 'A', 'title': 'Asked'}, {'artist': 'A', 'title': ''}], 'bob': [{'artist': 'B', 'title': 'X'}]}))
+        assert taste.requested_songs('ann', str(tmp_path)) == [('A', 'Asked')]
+
+
+class TestLasting:
+    """Whether a song deserves its place counts every play in full."""
+
+    def test_a_song_finished_long_ago_is_no_dislike(self):
+        s = song(1, 'A', 'Old favourite', plays=1, days_ago=300)
+        p = taste.build('ann', [s], plays(1, 'A', 'Old favourite', 300), now=NOW)
+        assert p.songs['1'] < 0.1                       # not something they play lately
+        assert p.lasting['1'] >= 0.3                    # but they heard it through
+
+    def test_three_stars_is_liked_a_little(self):
+        assert taste.liking(0, song(1, 'A', 'T', rating=6)) >= taste.RATED_FAIR_LIKING
+        assert taste.liking(0, song(1, 'A', 'T', rating=4)) < 0       # 2★

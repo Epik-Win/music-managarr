@@ -8,23 +8,58 @@ already in the library that they haven't heard yet.
 
 ## The profile
 
-Built at the start of each user's cycle, from that user's own view of the
-library (their plays, skips and star ratings) and from Plex's play history,
-which only the server owner can read (so it is read through the admin's
-connection and filtered to the user's accounts).
+Built for every user, for every song in the library, at the start of each
+of their cycles and by the daily pass. It reads:
 
-**How much they like each song** (`affinity`, −1 to 1):
+- their own view of the library: plays, skips and star ratings of every
+  song, and their ratings of albums and artists;
+- Plex's play history (only the server owner can read it, so it is read
+  through the admin's connection and filtered to the user's accounts);
+- their **tracked listens** (`listening.py`, below): how much of each song
+  they heard each time, and which they left in the first seconds;
+- the songs in **playlists they made themselves** (not MusicAI's own
+  playlists, AI playlists or smart playlists), and the songs they **asked
+  for** over Discord.
+
+**How much they like each song** (`liking`, −1 to 1):
 
 | Signal | Effect |
 |---|---|
-| Plays in Plex's history (last `TASTE_HISTORY_DAYS`) | Each play counts less the older it is: half after `TASTE_HALF_LIFE_DAYS`. A few plays this month make a song loved; plays a year ago barely count. Plays from before the history Plex keeps count by the song's play count and last-played date. |
-| 4★ or more | Loved (at least 0.55), whether played or not. |
-| 2★ | −0.6 or less; 1★ is −1. |
-| Skips | Count against an unrated or 3★ song by how often it is skipped rather than played. |
+| The song's rating | Speaks loudest: 4★ or more is loved (at least 0.55), 3★ at least 0.3, 2★ −0.6 or less, 1★ −1, whatever else is known. |
+| Plays | Plex's history (last `TASTE_HISTORY_DAYS`); for what they like *now*, each play counts less the older it is (half after `TASTE_HALF_LIFE_DAYS`). A tracked play heard only in part counts half. |
+| Skips | Count against the song by how often it is skipped rather than played: Plex's skip count, or the tracked plays left in their first 30 seconds when there are more of those. |
+| How much of it they hear | A song they usually leave before the end (tracked listens) is liked up to 40 % less than one they hear through. |
+| On repeat | Played again within a day: +0.1 each time, up to +0.2. |
+| The album's and the artist's ratings | For an unrated song: a 1★ album −0.5, 2★ −0.25, 4★ +0.15, 5★ +0.25; the artist's rating half that. |
+| Their own playlists | A song they keep in one is loved (at least 0.5). |
+| Asked for | At least 0.3, while they haven't skipped it more often than they played it. |
 
-A song scoring `0.5` or more is **loved**. A play Plex recorded for a song it
-has since re-added (moved, re-tagged) is matched to the song by artist and
-title.
+A song scoring `0.5` or more is **loved**. A song is **heard** once they
+played, skipped or rated it or keep it in a playlist; a song nobody has heard
+says nothing about anyone's taste. A play Plex recorded for a song it has
+since re-added (moved, re-tagged) is matched to the song by artist and title,
+and so is a tracked listen.
+
+Two values are kept per song. For picking what comes next, recent plays
+count most. For whether a song deserves its place in the library, every play
+counts in full (a song finished months ago is no dislike): that one is
+stored in each user's `track_scores` (`liking`, `heard`, and `score`, the
+liking or 0), which the library review, album completion and the top
+artists read ([library.md](library.md)).
+
+### The listening tracker
+
+Plex keeps play counts, skip counts and a history of finished plays, but not
+how much of a song someone heard before moving on. `listening.py` (started
+with MusicAI, restarted if it stops) looks at Plex's sessions every
+`LISTEN_POLL_SECONDS` (5) through the server owner's connection, which sees
+every listener, and writes one row per play to `DATA_DIR/listening.db`: the
+listener's account, the song, the player and device, when (with the hour and
+weekday), how far into the song they got, how long they actually listened
+(seeking ahead and pauses don't count) and how it ended: **finished** (to the
+last tenth or the last 15 seconds), **skipped** (left in its first 30 seconds
+or 30 %) or **partial**. A song played again straight after is a second play;
+a play still going when MusicAI stops is not recorded.
 
 **How much they like each artist** comes from that artist's songs: the loved
 ones add, the disliked ones take off half as much. An artist with many loved

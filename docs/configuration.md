@@ -52,6 +52,7 @@ See [taste.md](taste.md).
 | `CHART_PICKS` | `10` | At most this many songs each from the trending charts and the popular playlists; with a known taste, only those that fit. |
 | `TASTE_HALF_LIFE_DAYS` | `90` | A play counts half as much after this many days. |
 | `TASTE_HISTORY_DAYS` | `365` | Days of Plex's play history read. |
+| `LISTEN_POLL_SECONDS` | `5` | How often the listening tracker looks at what everyone is playing ([taste.md](taste.md#the-listening-tracker)). |
 | `TASTE_MIN_LOVED` | `10` | Loved songs a user needs before songs are picked by their taste (and before they get Picked for You). |
 | `TASTE_SEEDS` | `25` | Loved songs the picks start from. |
 | `TASTE_MIN_FIT` | `0.35` | Score (0–1) a candidate needs to be downloaded. |

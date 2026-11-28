@@ -13,10 +13,13 @@ going through a Mullvad VPN tunnel inside the container.
 ## Features
 
 - **Per-user taste, read the way Plex reads it.** Every Plex Home user's
-  taste comes from their own play history (recent plays counting most),
-  ratings and skips, and from Plex's own music data: the similar artists,
-  styles and moods of their favourites, and Plex's sonic analysis. See
-  [docs/taste.md](docs/taste.md).
+  liking of every song comes from their own play history (recent plays
+  counting most), how much of each song they actually hear (a listening
+  tracker follows every play), skips, plays on repeat, their ratings of
+  songs, albums and artists, the playlists they made and the songs they
+  asked for; and from Plex's own music data: the similar artists, styles and
+  moods of their favourites, and Plex's sonic analysis. One judgment is used
+  everywhere. See [docs/taste.md](docs/taste.md).
 - **New music that fits.** Each cycle completes albums in the library,
   fulfils queued requests, follows each user's top artists in Lidarr, and
   downloads songs picked for that user: songs like the ones they love, the
@@ -83,6 +86,7 @@ going through a Mullvad VPN tunnel inside the container.
 | Cycle worker | `app.py cycle-once` | One short-lived process per user, in turn: a full analysis and download cycle with that user's token and database. |
 | Library review | `library_review.py` | After every user's cycle of a pass: graduation, end of probation, disk space. |
 | Discord bot | `discord_bot.py` | Requests, slash commands, the cycle-status message, admin notices. |
+| Listening tracker | `listening.py` | How much of each song every listener hears, from Plex's sessions (`listening.db`). |
 | AI playlists | `ai_playlist.py` | `/ai_playlist`: filters read by the AI, then artists and songs chosen by number from the library's lists. |
 | Metadata daemon | `fix_metadata_daemon.py` | Daily: the admin's Delete playlist, Fix Metadata playlists, library repair, Manual Fix, album reconcile, Picked for You, lyrics files; moved songs back in their playlists. |
 | One-star watcher | `one_star_watcher.py` | While switched on, deletes songs the admin rates exactly one star. |

@@ -112,6 +112,7 @@ class Song:
     rating: float = 0.0           # Plex's 0–10, two per star
     last_played: float = 0.0
     added: float = 0.0
+    album_rating: float = 0.0     # the user's rating of the album, 0–10
 
 
 def _epoch(value) -> float:
@@ -144,6 +145,7 @@ def song_from_plex(track, features: Optional[dict] = None) -> Optional[Song]:
         rating=float(f.get('rating', getattr(track, 'userRating', 0)) or 0),
         last_played=_epoch(f.get('last_played', getattr(track, 'lastViewedAt', None))),
         added=_epoch(f.get('date_added', getattr(track, 'addedAt', None))),
+        album_rating=float(f.get('album_rating') or 0),
     )
 
 
@@ -169,6 +171,93 @@ def affinity(recent_plays: float, plays: int = 0, skips: int = 0, rating: float 
     score = listened + (0.1 if stars >= 3 else -0.2 if stars > 0 else 0.0)
     score -= 0.8 * skips / (skips + plays + 1)
     return max(-1.0, min(1.0, score))
+
+
+REPEAT_HOURS = 24                 # a song played again within this is "on repeat"
+KEPT_LIKING = LOVED               # a song the user keeps in a playlist of their own
+REQUESTED_LIKING = 0.3            # a song the user asked for, until their listening says otherwise
+RATED_FAIR_LIKING = 0.3           # a song rated 3★
+
+
+@dataclass
+class Signals:
+    """Everything known about how one user takes one song, beyond Plex's own
+    counts and rating: their tracked listens (listening.py), how often they
+    played it again within REPEAT_HOURS, the user's rating of its artist,
+    whether they keep it in a playlist of their own, and whether they asked
+    for it."""
+    heard: object = None          # listening.Heard, or None
+    repeats: int = 0
+    artist_rating: float = 0.0    # Plex's 0–10
+    kept: bool = False
+    requested: bool = False
+
+
+def _rating_prior(rating: float, weight: float) -> float:
+    """What an album's or artist's rating says about one of its songs."""
+    stars = (rating or 0) / 2
+    if stars <= 0:
+        return 0.0
+    if stars <= 1.5:
+        return -0.5 * weight
+    if stars <= 2.5:
+        return -0.25 * weight
+    if stars >= 4.5:
+        return 0.25 * weight
+    if stars >= 3.5:
+        return 0.15 * weight
+    return 0.0
+
+
+def liking(recent_plays: float, song: Song, sig: Optional[Signals] = None) -> float:
+    """How much the user likes one song, from -1 to 1, from everything known.
+
+    - The song's own rating speaks loudest (affinity()): 1★ is -1, 4★ is at
+      least 0.55, whatever else is known.
+    - Plays count, the recent ones most; a play heard only in part counts
+      half. Skips count against: Plex's skip count, or the tracked plays
+      left in their first seconds when there are more of those.
+    - A song the user usually leaves before the end is liked less than one
+      they hear through (from the tracked listens' share heard).
+    - Played again within REPEAT_HOURS: on repeat, a sign of love.
+    - Without a song rating, the album's rating and, half as much, the
+      artist's lean it up or down.
+    - Kept in a playlist of their own: at least KEPT_LIKING. Asked for: at
+      least REQUESTED_LIKING while they haven't skipped it more than played it.
+    """
+    sig = sig or Signals()
+    heard = sig.heard
+    skips = max(song.skips, getattr(heard, 'skipped', 0) or 0)
+    recent = recent_plays + 0.5 * (getattr(heard, 'partial', 0) or 0)
+    value = affinity(recent, song.plays, skips, song.rating)
+    if song.rating:
+        # 3★ is a song they find good enough: liked a little, whatever the plays.
+        return max(value, RATED_FAIR_LIKING) if 3 <= song.rating / 2 < 4 else value
+    tracked = getattr(heard, 'plays', 0) or 0
+    if value > 0 and tracked:
+        value *= 0.6 + 0.4 * (1 - (1 - heard.share) * min(1.0, tracked / 3))
+    value += min(0.2, 0.1 * sig.repeats)
+    value += _rating_prior(song.album_rating, 1.0) + _rating_prior(sig.artist_rating, 0.5)
+    if sig.kept:
+        value = max(value, KEPT_LIKING)
+    listened = max(song.plays, (getattr(heard, 'finished', 0) or 0) + (getattr(heard, 'partial', 0) or 0))
+    if sig.requested and skips <= listened:
+        value = max(value, REQUESTED_LIKING)
+    return max(-1.0, min(1.0, value))
+
+
+def repeats(events: Iterable[Tuple[str, float, str, str]]) -> Dict[str, int]:
+    """{Plex key: plays that came within REPEAT_HOURS of the one before}."""
+    times: Dict[str, List[float]] = defaultdict(list)
+    for key, when, _artist, _title in events:
+        times[key].append(when)
+    out = {}
+    for key, ts in times.items():
+        ts.sort()
+        n = sum(1 for a, b in zip(ts, ts[1:]) if b - a <= REPEAT_HOURS * 3600)
+        if n:
+            out[key] = n
+    return out
 
 
 def _dislikes(songs: Iterable[Song], now: float, played: Set[str] = frozenset()) -> Tuple[Set[str], Set[str]]:
@@ -206,7 +295,8 @@ def disliked_artists(songs: Iterable[Song], now: Optional[float] = None) -> Set[
 @dataclass
 class Profile:
     user: str
-    songs: Dict[str, float] = field(default_factory=dict)        # Plex key → affinity
+    songs: Dict[str, float] = field(default_factory=dict)        # Plex key → liking now (recent plays count most)
+    lasting: Dict[str, float] = field(default_factory=dict)      # Plex key → liking with every play in full
     by_key: Dict[str, Song] = field(default_factory=dict)
     index: Dict[tuple, List[str]] = field(default_factory=dict)  # song_key → Plex keys
     artists: Dict[str, float] = field(default_factory=dict)      # artist_key → -1 … 1
@@ -263,23 +353,40 @@ def _normalised(weights: Dict[str, float]) -> Dict[str, float]:
 
 
 def build(user: str, songs: Sequence[Song], events: Sequence[Tuple[str, float, str, str]] = (),
-          now: Optional[float] = None, artist_info: Optional[ArtistInfo] = None) -> Profile:
+          now: Optional[float] = None, artist_info: Optional[ArtistInfo] = None,
+          listens: Optional[Dict[str, object]] = None, kept: Iterable[str] = (),
+          requested: Iterable[Tuple[str, str]] = (), artist_ratings: Optional[Dict[str, float]] = None) -> Profile:
     """The user's profile from their songs (with their own plays, skips and
-    ratings) and their play history: (Plex key, when, artist, title) per play.
-    A play of a song Plex has since re-added under a new key is matched to the
-    song by artist and title."""
+    ratings), their play history: (Plex key, when, artist, title) per play,
+    their tracked listens ({Plex key: listening.Heard}), the Plex keys of the
+    songs in their own playlists, the (artist, title) of the songs they asked
+    for, and their artist ratings ({artist Plex key: rating}). A play of a
+    song Plex has since re-added under a new key is matched to the song by
+    artist and title."""
     now = time.time() if now is None else now
     p = Profile(user=user)
     for s in songs:
         p.by_key[s.key] = s
         for artist in {s.artist, s.album_artist} - {''}:
             p.index.setdefault(song_key(artist, s.title), []).append(s.key)
+    match = lambda key, artist, title: [key] if key in p.by_key else p.index.get(song_key(artist, title), [])[:1]
 
     recent: Dict[str, float] = defaultdict(float)
+    play_counts: Counter = Counter()
+    matched_events = []
     for key, when, artist, title in events:
-        keys = [key] if key in p.by_key else p.index.get(song_key(artist, title), [])[:1]
-        for k in keys:
+        for k in match(key, artist, title):
             recent[k] += decay((now - when) / 86400)
+            play_counts[k] += 1
+            matched_events.append((k, when, artist, title))
+    on_repeat = repeats(matched_events)
+    heard_songs: Dict[str, object] = {}
+    for key, h in (listens or {}).items():
+        for k in match(key, getattr(h, 'artist', ''), getattr(h, 'title', '')):
+            heard_songs[k] = h
+    kept_keys = {k for k in kept if k in p.by_key}
+    requested_keys = {k for artist, title in requested for k in p.index.get(song_key(artist, title), [])}
+    artist_ratings = artist_ratings or {}
 
     names: Dict[str, Counter] = defaultdict(Counter)
     seed_order: Dict[str, float] = {}
@@ -291,10 +398,17 @@ def build(user: str, songs: Sequence[Song], events: Sequence[Tuple[str, float, s
             r = recent[s.key]
         else:                          # plays from before the history Plex keeps
             r = s.plays * decay((now - s.last_played) / 86400) if s.plays and s.last_played else 0.0
-        a = affinity(r, s.plays, s.skips, s.rating)
+        sig = Signals(heard=heard_songs.get(s.key), repeats=on_repeat.get(s.key, 0),
+                      artist_rating=artist_ratings.get(s.artist_ref, 0.0),
+                      kept=s.key in kept_keys, requested=s.key in requested_keys)
+        a = liking(r, s, sig)
         p.songs[s.key] = a
+        # Whether the song deserves its place: every play counts in full,
+        # however long ago (a song finished months ago is no dislike).
+        p.lasting[s.key] = liking(max(float(s.plays), float(play_counts.get(s.key, 0))), s, sig)
         seed_order[s.key] = a * (0.5 + 0.5 * min(1.0, r / 2))     # loved lately first
-        heard = bool(s.plays or s.rating or s.skips or s.key in recent)
+        heard = bool(s.plays or s.rating or s.skips or s.key in recent or s.key in heard_songs
+                     or s.key in kept_keys)
         if heard:
             p.heard.add(s.key)
         ak = artist_key(s.artist)
@@ -451,16 +565,78 @@ def nearest(server, ref: str, limit: int, max_distance: float) -> List[Tuple[str
     return sorted(found, key=lambda x: x[3])
 
 
+def automatic_playlists() -> Set[str]:
+    """Playlists MusicAI makes and fills itself: their songs say nothing of
+    what the user chose."""
+    import playlist_keeper
+    return playlist_keeper.kept_by_musicai() | {
+        os.environ.get('TRENDING_PLAYLIST_NAME', 'Trending Now for You'),
+        os.environ.get('SIMILAR_PLAYLIST_NAME', 'You Might Like'), for_you_playlist_name()}
+
+
+def own_playlist_songs(server) -> Set[str]:
+    """Plex keys of the songs in the playlists the user made themselves (not
+    MusicAI's own, not AI playlists, not smart playlists)."""
+    automatic = automatic_playlists()
+    prefix = os.environ.get('AI_PLAYLIST_PREFIX', 'AI: ')
+    keys: Set[str] = set()
+    try:
+        for pl in server.playlists():
+            if getattr(pl, 'playlistType', 'audio') != 'audio' or getattr(pl, 'smart', False):
+                continue
+            if pl.title in automatic or (prefix and pl.title.startswith(prefix)):
+                continue
+            keys |= {str(item.ratingKey) for item in pl.items()}
+    except Exception as exc:
+        logger.debug(f"The user's playlists were not read: {exc}")
+    return keys
+
+
+def artist_ratings(section) -> Dict[str, float]:
+    """{artist Plex key: the user's rating} for the artists they rated."""
+    try:
+        return {str(a.ratingKey): float(a.userRating) for a in section.searchArtists()
+                if getattr(a, 'userRating', None)}
+    except Exception as exc:
+        logger.debug(f"Artist ratings were not read: {exc}")
+        return {}
+
+
+def requested_songs(user: str, data_dir: Optional[str] = None) -> List[Tuple[str, str]]:
+    """(artist, title) of every song the user asked for over Discord."""
+    import request_history
+    path = os.path.join(data_dir or os.environ.get('DATA_DIR', '/app/data'), 'discord_requests.json')
+    try:
+        history = request_history.load(path)
+    except Exception as exc:
+        logger.debug(f"Request history not read: {exc}")
+        return []
+    name = (user or '').casefold()
+    return [(e.get('artist') or '', e.get('title') or '') for u, entries in history.items() if u.casefold() == name
+            for e in entries or [] if isinstance(e, dict) and e.get('title')]
+
+
 def from_plex(user: str, songs: Sequence[Song], admin_server, section, is_admin: bool,
-              now: Optional[float] = None, artists: bool = True) -> Profile:
-    """build() with everything read from Plex through the admin connection:
-    the user's plays from the history and, with `artists`, the favourite
+              now: Optional[float] = None, artists: bool = True, user_server=None,
+              user_section=None) -> Profile:
+    """build() with everything read: the user's plays from Plex's history
+    (the admin connection), their tracked listens (listening.py), and through
+    their own connection (`user_server` / `user_section`) the songs of their
+    own playlists and their artist ratings; with `artists`, the favourite
     artists' metadata."""
+    import listening
     ids = account_ids(admin_server, user, is_admin)
     events = play_events(admin_server, section, ids, now=now)
+    listens = listening.heard_by(ids, names=[user])
+    kept = own_playlist_songs(user_server) if user_server is not None else set()
+    rated_artists = artist_ratings(user_section) if user_section is not None else {}
+    asked = requested_songs(user)
     logger.info(f"🎧 {user}: {len(events)} play(s) in Plex's history over {HISTORY_DAYS} days "
-                f"(account(s) {sorted(ids)})")
-    return build(user, songs, events, now=now, artist_info=plex_artist_info(admin_server) if artists else None)
+                f"(account(s) {sorted(ids)}), {sum(h.plays for h in listens.values())} tracked listen(s) of "
+                f"{len(listens)} song(s), {len(kept)} song(s) in their own playlists, {len(rated_artists)} rated "
+                f"artist(s), {len(asked)} request(s)")
+    return build(user, songs, events, now=now, artist_info=plex_artist_info(admin_server) if artists else None,
+                 listens=listens, kept=kept, requested=asked, artist_ratings=rated_artists)
 
 
 # -- scoring candidates ---------------------------------------------------------------
@@ -725,7 +901,7 @@ def refresh_for_you(admin_server, server, section_name: str, user: str, is_admin
     tracks = {str(t.ratingKey): t for t in section.searchTracks()}
     songs = [s for s in (song_from_plex(t) for t in tracks.values()) if s]
     p = from_plex(user, songs, admin_server, admin_server.library.section(section_name), is_admin,
-                  now=now, artists=False)
+                  now=now, artists=False, user_server=server, user_section=section)
     playlists = [pl for pl in server.playlists() if pl.title.strip() == name
                  and getattr(pl, 'playlistType', 'audio') == 'audio' and not getattr(pl, 'smart', False)]
     items = []

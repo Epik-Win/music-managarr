@@ -7,12 +7,13 @@ refreshed that user's scores (`--when end`), and before a pass's downloads
 if the disk is already low (`--when start`):
 
 A song is judged only on what its listeners did with it: played it, skipped
-it (did not listen to the end) or rated it. A song nobody has played, skipped
-or rated has told nothing about anyone's taste, so the review neither
-graduates nor deletes it for its score; it stays on probation until someone
-hears it. A listener's judgment is their score, except that a rating speaks
-louder: 1★ counts 0, 2★ at most 0.1 and 4★ or more at least
-GRADUATION_SCORE.
+it (did not listen to the end), rated it or kept it in a playlist of their
+own. A song nobody has heard has told nothing about anyone's taste, so the
+review neither graduates nor deletes it for its score; it stays on probation
+until someone hears it. A listener's judgment is the one their taste profile
+gives the song (taste.liking: plays, how much of it they hear, skips, plays
+on repeat, ratings of the song, its album and its artist, their playlists
+and requests), stored by their cycle; 0 for a song they dislike.
 
 1. **Graduation** — a probationary song whose judgment reaches
    GRADUATION_SCORE for any user leaves probation and stays for good.
@@ -106,18 +107,27 @@ def judgment(score: Optional[float], plays: Optional[int], skips: Optional[int],
 
 def best_scores(keys: Iterable[str], databases: Dict[str, str]) -> Dict[str, float]:
     """{Plex track key: the best judgment any listener gives it}. A song
-    nobody played, skipped or rated is missing: there is nothing to judge it on."""
+    nobody played, skipped or rated is missing: there is nothing to judge it on.
+
+    A user's judgment is the one their last cycle stored (taste.liking, with
+    their play history, tracked listens, playlists and requests: `liking` and
+    `heard`); a database without it is judged from Plex's counts alone."""
     wanted = set(keys)
     best: Dict[str, float] = {}
     for db in databases.values():
         try:
             conn = sqlite3.connect(db)
-            rows = conn.execute("SELECT track_id, score, view_count, skip_count, rating, last_played "
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(track_scores)")}
+            stored = "liking, heard" if {'liking', 'heard'} <= columns else "NULL, NULL"
+            rows = conn.execute(f"SELECT track_id, score, view_count, skip_count, rating, last_played, {stored} "
                                 "FROM track_scores")
-            for key, score, plays, skips, rating, last_played in rows:
+            for key, score, plays, skips, rating, last_played, liking, heard in rows:
                 if key not in wanted:
                     continue
-                value = judgment(score, plays, skips, rating, last_played)
+                if heard is not None:
+                    value = max(0.0, float(liking or 0.0)) if heard else None
+                else:
+                    value = judgment(score, plays, skips, rating, last_played)
                 if value is not None and value > best.get(key, -1):
                     best[key] = value
             conn.close()

@@ -979,6 +979,12 @@ class MusicAIAnalyzer:
             if 'album_rating' not in columns:
                 logger.info("Adding album_rating column to track_scores table")
                 cursor.execute("ALTER TABLE track_scores ADD COLUMN album_rating REAL")
+            # The taste profile's judgment of the song (taste.liking, -1 … 1) and
+            # whether this user has heard it at all.
+            if 'liking' not in columns:
+                cursor.execute("ALTER TABLE track_scores ADD COLUMN liking REAL")
+            if 'heard' not in columns:
+                cursor.execute("ALTER TABLE track_scores ADD COLUMN heard INTEGER")
         except Exception as e:
             logger.debug(f"Could not check/migrate track_scores table: {e}")
         
@@ -1407,39 +1413,42 @@ class MusicAIAnalyzer:
             return None
     
     def calculate_engagement_score(self, features):
-        """
-        Calculate track engagement score based on multiple factors.
-        Score ranges from 0 to 1.
-        """
+        """How much this user likes a track, 0 to 1, from Plex's counts and
+        ratings alone (every play in full): the taste profile's judgment
+        (taste.liking) without the play history, tracked listens, playlists
+        and requests, which store_likings() adds once the profile is built. A track nobody played, skipped or rated scores 0, as
+        does one the user dislikes."""
+        import taste
         if not features:
             return 0
-
-        view_count = features.get('view_count', 0) or 0
-        skip_count = features.get('skip_count', 0) or 0
-        rating = features.get('rating', 0) or 0
-        album_rating = features.get('album_rating', 0) or 0
-        last_played = features.get('last_played', 0) or 0
-
-        # Do not reward tracks with no user engagement signals.
-        # This prevents empty accounts from appearing confident simply because the
-        # library is large.
-        if view_count == 0 and last_played == 0 and rating == 0:
+        song = taste.Song(key=str(features.get('track_id') or ''), artist=str(features.get('artist') or ''),
+                          title=str(features.get('title') or ''), plays=int(features.get('view_count') or 0),
+                          skips=int(features.get('skip_count') or 0), rating=float(features.get('rating') or 0),
+                          last_played=float(features.get('last_played') or 0),
+                          album_rating=float(features.get('album_rating') or 0))
+        if not (song.plays or song.skips or song.rating or song.last_played):
             return 0
+        return round(max(0.0, taste.liking(float(song.plays), song)), 4)
 
-        # Normalize components
-        view_score = min(view_count / 100, 1.0) * 0.4  # 40% weight
-        skip_penalty = max(0, (1 - min(skip_count / 10, 1.0)) * 0.3)  # 30% weight with penalty
-        # Use track rating when available, otherwise fall back to album rating
-        effective_rating = rating if rating > 0 else album_rating
-        rating_score = (effective_rating / 10) * 0.2 if effective_rating > 0 else 0  # 20% weight
-
-        # Recency bonus (played within last 7 days gets boost)
-        now = int(time.time())
-        days_since_played = (now - last_played) / 86400 if last_played else float('inf')
-        recency_bonus = 0.1 if days_since_played < 7 else 0
-        
-        total_score = view_score + skip_penalty + rating_score + recency_bonus
-        return min(total_score, 1.0)
+    def store_likings(self, profile) -> int:
+        """Write the taste profile's judgment of every song into track_scores:
+        `liking` (-1 … 1, with every play counted in full: whether the song
+        deserves its place), `heard` (played, skipped, rated or kept), and
+        `score` (the liking, 0 for a disliked song), which everything else
+        reads: the library review, album completion, the top artists."""
+        if profile is None:
+            return 0
+        judged = getattr(profile, 'lasting', None) or profile.songs
+        rows = [(round(max(0.0, value), 4), round(value, 4), 1 if key in profile.heard else 0, key)
+                for key, value in judged.items()]
+        conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT)
+        with conn:
+            conn.executemany('UPDATE track_scores SET score = ?, liking = ?, heard = ? WHERE track_id = ?', rows)
+        conn.close()
+        logger.info(f"🎯 Stored {len(rows)} song judgment(s) for {APP_USER_NAME} "
+                    f"({sum(1 for r in rows if r[2])} heard, {sum(1 for r in rows if r[1] >= 0.5)} loved, "
+                    f"{sum(1 for r in rows if r[2] and r[1] < 0)} disliked)")
+        return len(rows)
     
     def analyze_all_tracks(self):
         """Analyze all tracks and store scores."""
@@ -3229,7 +3238,15 @@ class MusicAIAnalyzer:
             songs = [s for s in (taste.song_from_plex(t.get('track'), t.get('features')) for t in analyzed_tracks)
                      if s]
             is_admin = os.environ.get("APP_IS_ADMIN_USER", "").lower() == "true"
-            profile = taste.from_plex(PLEX_USERNAME or APP_USER_NAME, songs, admin, section, is_admin)
+            user_server = getattr(self, 'plex', None)
+            user_section = None
+            if user_server is not None:
+                try:
+                    user_section = user_server.library.section(PLEX_MUSIC_SECTION)
+                except Exception as exc:
+                    logger.debug(f"This user's music section not read: {exc}")
+            profile = taste.from_plex(PLEX_USERNAME or APP_USER_NAME, songs, admin, section, is_admin,
+                                      user_server=user_server, user_section=user_section)
             profile.weights = taste.source_weights(DB_PATH, profile)
             taste.save_summary(profile, os.path.dirname(DB_PATH))
         except Exception as e:
@@ -5380,6 +5397,10 @@ def _run_cycle(analyzer, run_once: bool):
 
     analyzer.start_cycle_playlists()
     analyzer.taste = analyzer.build_taste(analyzed_tracks)
+    try:
+        analyzer.store_likings(analyzer.taste)
+    except Exception as exc:
+        logger.warning(f"Could not store this user's song judgments: {exc}")
     analyzer.picked_artists = Counter()
     try:
         _push_cycle_status("Analysis", "Inspecting library and low-rated content")
